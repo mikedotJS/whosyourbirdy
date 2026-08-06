@@ -275,7 +275,8 @@ Il a déjà attrapé deux vraies casses : les fichiers `/ort/*.mjs` doivent êtr
 MIME JavaScript** sinon le backend WASM ne démarre pas — à vérifier sur votre hébergeur — et
 `pnpm dev` était **totalement inutilisable** tant que ces fichiers vivaient dans `public/` (Vite
 refuse de servir un fichier de `public/` atteint par un `import`, y compris l'import dynamique
-qu'ORT fait de son runtime). Ils sont maintenant servis par un plugin Vite, en dev comme en build.
+qu'ORT fait de son runtime). Ils sont maintenant servis par un plugin Vite, en dev comme en build —
+et `pnpm dev` est vérifié de bout en bout : 24 détections, même première ligne qu'en production.
 
 ## Suite
 
