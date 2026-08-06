@@ -13,7 +13,8 @@
     "model:build": "python3 scripts/fetch_artifacts.py && .venv/bin/python scripts/convert_to_onnx.py",
     "parity": "node scripts/parity.mjs",
     "bench": "node scripts/bench.mjs",
-    "typecheck": "tsc -b --noEmit false --pretty"
+    "typecheck": "tsc -b --noEmit false --pretty",
+    "smoke": "node scripts/smoke.mjs"
   },
   "dependencies": {
     "onnxruntime-web": "1.23.2",

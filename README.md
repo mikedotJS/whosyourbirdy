@@ -14,8 +14,11 @@ téléchargé une fois, mis en cache, et l'inférence tourne en WebAssembly dans
 
 ## État
 
-**P0 livré** : le pipeline d'analyse et la preuve de parité numérique avec l'implémentation
-officielle. Pas encore d'interface — elle arrive en P1.
+**P0 et P1 livrés** : le pipeline, la preuve de parité numérique avec l'implémentation officielle, et
+une interface minimale fonctionnelle — dépôt d'un fichier, détections triées (espèce, score,
+timecode), seuil de confiance réglable, lecture du segment au clic.
+
+Le spectrogramme et la timeline arrivent en P2.
 
 > **Une limite connue dépasse le contrat de 1 × 10⁻³.** Sur la **dernière fenêtre** d'un fichier dont
 > la durée n'est pas un multiple de 3 s (donc zero-paddée), l'écart de score atteint 1,7 × 10⁻².
@@ -34,6 +37,7 @@ python3 -m venv .venv
 
 pnpm model:build   # récupère les artefacts officiels et produit public/models/
 pnpm parity        # prouve que le pipeline reproduit BirdNET
+pnpm smoke         # pilote l'interface dans un vrai Chromium
 pnpm dev
 ```
 
@@ -235,9 +239,28 @@ vert.
 
 Voir `docs/PERF.md`. Mesures produites par `pnpm bench`.
 
+## L'interface (P1)
+
+Volontairement minimale : c'est P2 qui portera la direction visuelle, autour du spectrogramme.
+
+Deux décisions valent d'être expliquées :
+
+**Le seuil filtre en mémoire, il ne relance rien.** L'analyse tourne une fois à un plancher de 0,01 et
+le curseur filtre le résultat déjà en RAM — ~140 ms au lieu de relancer 40 inférences. Ce plancher est
+aussi la borne basse du curseur : proposer moins promettrait des résultats jamais calculés.
+
+**La lecture passe par le fichier d'origine**, pas par le PCM décodé — celui-ci pèse des dizaines de
+Mo et il est de toute façon transféré au worker. Un `objectURL` et un `<audio>` suffisent, et la
+lecture s'arrête à la fin de la fenêtre de 3 s pour qu'on entende exactement ce que le modèle a noté.
+
+`pnpm smoke` pilote tout ça dans un vrai Chromium : dépôt du fichier, progression, détections,
+curseur, lecture, arrêt automatique, plus zéro erreur console ou 404. Il a déjà attrapé une vraie
+casse — les fichiers `/ort/*.mjs` doivent être servis avec un **type MIME JavaScript**, sinon le
+backend WASM ne se charge pas du tout. À vérifier sur votre hébergeur statique.
+
 ## Suite
 
-P1 interface minimale · P2 spectrogramme + timeline · P3 micro en direct · P4 filtre géo-temporel.
+P2 spectrogramme + timeline · P3 micro en direct · P4 filtre géo-temporel.
 
 Le modèle géo de P4 est déjà récupéré et vérifié : entrée `[1, 3]` = latitude, longitude, semaine ;
 sortie `[1, 6522]` probabilités de présence. Contrôle de bon sens à Paris (48,85 / 2,35), semaine 20 :

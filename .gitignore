@@ -13,3 +13,4 @@ public/ort/
 .parity/
 __pycache__/
 *.pyc
+.smoke/
