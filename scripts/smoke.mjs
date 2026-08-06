@@ -310,6 +310,11 @@ async function main() {
     // Assert on what a user perceives — the row reporting itself as playing —
     // rather than on the <audio> element, which is created via `new Audio()` and
     // never attached to the document.
+    // Re-pin a species: the focus test above deliberately left nothing focused,
+    // so there are no occurrence chips to click until we open one again.
+    await page.locator(`${ROWS} button`).first().click()
+    await page.waitForTimeout(300)
+
     const firstRow = page.locator(`${ROWS} ul button`).first()
     await firstRow.click()
     await page.waitForTimeout(700)
