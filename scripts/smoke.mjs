@@ -17,7 +17,7 @@
  */
 import { spawnSync } from 'node:child_process'
 import { createServer } from 'node:http'
-import { existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright'
@@ -27,6 +27,42 @@ const FIXTURE = join(ROOT, '.cache', 'birdnet', 'soundscape.wav')
 const CHROMIUM = process.env.CHROMIUM_PATH ?? '/opt/pw-browsers/chromium'
 
 const shotsDir = process.argv.find((a) => a.startsWith('--shots='))?.slice(8) ?? join(ROOT, '.smoke')
+
+/**
+ * Golden values for the reference fixture, taken from the parity ground truth.
+ * Exact counts and an exact top row are what make this test able to fail: a
+ * dead slider, a shuffled list or a mis-mapped score all pass `rows > 0`.
+ */
+const GOLDEN = {
+  at025: 24,
+  at070: 2,
+  at005: 63,
+  top: {
+    common: 'Mésange à tête noire',
+    scientific: 'Poecile atricapillus',
+    range: '0:00–0:03',
+    score: 0.81,
+  },
+}
+
+async function readRows(page) {
+  return page.locator('ul > li').evaluateAll((items) =>
+    items.map((li) => {
+      const text = li.innerText.split('\n').map((t) => t.trim()).filter(Boolean)
+      return {
+        common: text[0],
+        scientific: text[1],
+        range: text.find((t) => /^\d:\d\d–\d:\d\d$/.test(t)) ?? '',
+        score: Number(text[text.length - 1]),
+      }
+    }),
+  )
+}
+
+function toSeconds(clock) {
+  const [m, s] = clock.split(':').map(Number)
+  return m * 60 + s
+}
 
 const MIME = {
   '.js': 'text/javascript',
@@ -108,14 +144,40 @@ async function main() {
     await page.waitForTimeout(400)
     await page.screenshot({ path: join(shotsDir, '3-results.png'), fullPage: true })
 
+    // Golden values from the parity ground truth. `rows > 0` would pass with the
+    // species, scores and timecodes all shuffled; these would not.
     const rows = await page.locator('ul > li').count()
-    check('detections listed at the default threshold', rows > 0, `${rows} rows`)
-    const first = await page.locator('ul > li').first().innerText()
+    check('exactly the expected detections at 0.25', rows === GOLDEN.at025, `${rows} rows`)
+
     check(
-      'each row carries species, timecode and score',
-      /\d:\d\d–\d:\d\d/.test(first) && /0\.\d\d/.test(first),
-      first.replace(/\n/g, ' / '),
+      'the file name and duration match the file analysed',
+      (await page.locator('main').innerText()).includes('2:00'),
     )
+
+    const parsed = await readRows(page)
+    check(
+      'top detection matches the reference exactly',
+      parsed[0].common === GOLDEN.top.common &&
+        parsed[0].scientific === GOLDEN.top.scientific &&
+        parsed[0].range === GOLDEN.top.range &&
+        parsed[0].score === GOLDEN.top.score,
+      JSON.stringify(parsed[0]),
+    )
+
+    const scores = parsed.map((r) => r.score)
+    check(
+      'detections are sorted by descending score',
+      scores.every((v, i) => i === 0 || v <= scores[i - 1]),
+      `${scores[0]} … ${scores[scores.length - 1]}`,
+    )
+
+    // overlap is 0, so every window starts on a 3 s boundary and is 3 s long.
+    const offGrid = parsed.filter((r) => {
+      const [start, end] = r.range.split('–').map(toSeconds)
+      return start % 3 !== 0 || end - start !== 3 || end > Math.ceil(120 / 3) * 3
+    })
+    check('every timecode sits on the 3 s analysis grid', offGrid.length === 0,
+      offGrid.slice(0, 2).map((r) => r.range).join(', '))
 
     // The slider must filter in memory, not re-run the model.
     const t0 = Date.now()
@@ -123,12 +185,17 @@ async function main() {
     await page.waitForTimeout(120)
     const high = await page.locator('ul > li').count()
     const elapsed = Date.now() - t0
-    check('threshold filters instantly', elapsed < 1000 && high <= rows, `${rows} → ${high} rows in ${elapsed} ms`)
+    // Strict: `high <= rows` is satisfied by an onChange that does nothing at all.
+    check(
+      'raising the threshold hides detections, instantly',
+      high === GOLDEN.at070 && elapsed < 1000,
+      `${rows} → ${high} rows in ${elapsed} ms`,
+    )
 
     await page.locator('input[type=range]').fill('0.05')
     await page.waitForTimeout(120)
     const low = await page.locator('ul > li').count()
-    check('lowering the threshold reveals more', low >= rows, `${low} rows at 0.05`)
+    check('lowering the threshold reveals more', low === GOLDEN.at005, `${low} rows at 0.05`)
 
     await page.locator('input[type=range]').fill('0.25')
     await page.waitForTimeout(120)
@@ -150,6 +217,49 @@ async function main() {
     check(
       'playback stops at the end of the 3 s window',
       (await firstRow.getAttribute('aria-pressed')) === 'false',
+    )
+
+    // ---- regression: switching files mid-analysis -------------------------
+    // A cancelled run used to finish anyway and write its results under the new
+    // file's name — 24 bird detections displayed for a 29-byte text file. The
+    // worker now yields so `cancel` is actually delivered, and the hook drops
+    // state writes from superseded runs.
+    const decoy = join(shotsDir, 'not-audio.wav')
+    writeFileSync(decoy, 'this is not audio, it is a text file pretending to be one')
+
+    await page.reload()
+    await page.setInputFiles('input[type=file]', FIXTURE)
+    await page.waitForSelector('text=/fenêtre \\d+ \\/ 40/', { timeout: 600_000 })
+    await page.click('text=Autre fichier')
+    await page.setInputFiles('input[type=file]', decoy)
+
+    // Long enough that the abandoned run would have finished if it were still live.
+    await page.waitForTimeout(20_000)
+    const after = await page.locator('main').innerText()
+    await page.screenshot({ path: join(shotsDir, '5-switched.png'), fullPage: true })
+
+    check(
+      'a superseded analysis cannot report results under the new file',
+      !/détections? ·/.test(after) && (await page.locator('ul > li').count()) === 0,
+      after.split('\n').slice(0, 3).join(' | '),
+    )
+    check(
+      'the undecodable file reports its own error',
+      /pas pu être décodé/.test(after),
+      after.split('\n').find((l) => /décod/.test(l)) ?? after.slice(0, 80),
+    )
+
+    // ---- regression: reset mid-analysis leaves no ghost list ---------------
+    await page.reload()
+    await page.setInputFiles('input[type=file]', FIXTURE)
+    await page.waitForSelector('text=/fenêtre \\d+ \\/ 40/', { timeout: 600_000 })
+    await page.click('text=Autre fichier')
+    await page.waitForTimeout(20_000)
+    const afterReset = await page.locator('main').innerText()
+    check(
+      'reset mid-analysis leaves the drop zone and nothing else',
+      /Déposez un enregistrement/.test(afterReset) && (await page.locator('ul > li').count()) === 0,
+      afterReset.split('\n').slice(0, 2).join(' | '),
     )
 
     check('no console errors, page errors or 404s', problems.length === 0, problems.slice(0, 3).join(' | '))

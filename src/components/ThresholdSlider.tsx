@@ -20,7 +20,7 @@ export function ThresholdSlider({ value, min, onChange, total, visible }: Props)
         <label htmlFor="threshold" className="text-sm font-medium">
           Seuil de confiance
         </label>
-        <span className="text-sm tabular-nums text-neutral-500">
+        <span className="text-sm tabular-nums text-neutral-500 dark:text-neutral-400">
           {value.toFixed(2)} · {visible}/{total}
         </span>
       </div>
@@ -34,7 +34,7 @@ export function ThresholdSlider({ value, min, onChange, total, visible }: Props)
         onChange={(e) => onChange(Number(e.target.value))}
         className="w-full accent-neutral-900 dark:accent-neutral-100"
       />
-      <p className="text-xs text-neutral-500">
+      <p className="text-xs text-neutral-500 dark:text-neutral-400">
         BirdNET utilise 0,25 par défaut. Plus bas = plus de détections, dont davantage de faux
         positifs.
       </p>

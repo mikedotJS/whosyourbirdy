@@ -64,11 +64,21 @@ function Panel({
   percent: number | null
 }) {
   return (
-    <div className="flex flex-col gap-2">
+    <div
+      className="flex flex-col gap-2"
+      // A 52 MB download with no accessible progress leaves a screen-reader user
+      // with no idea whether anything is happening.
+      role="progressbar"
+      aria-label={label}
+      aria-valuemin={percent === null ? undefined : 0}
+      aria-valuemax={percent === null ? undefined : 100}
+      aria-valuenow={percent === null ? undefined : Math.round(percent)}
+      aria-valuetext={detail ? `${label} — ${detail}` : label}
+    >
       <div className="flex items-baseline justify-between gap-4 text-sm">
         <span>{label}</span>
         {percent !== null && (
-          <span className="tabular-nums text-neutral-500">{percent.toFixed(0)} %</span>
+          <span className="tabular-nums text-neutral-500 dark:text-neutral-400">{percent.toFixed(0)} %</span>
         )}
       </div>
       <div className="h-1 overflow-hidden rounded-full bg-neutral-200 dark:bg-neutral-800">
@@ -80,7 +90,7 @@ function Panel({
           style={percent === null ? undefined : { width: `${percent}%` }}
         />
       </div>
-      {detail && <p className="text-xs text-neutral-500">{detail}</p>}
+      {detail && <p className="text-xs text-neutral-500 dark:text-neutral-400">{detail}</p>}
     </div>
   )
 }

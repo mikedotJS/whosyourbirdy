@@ -46,12 +46,12 @@ export function DetectionList({ detections, playing, onPlay }: Props) {
 
               <span className="min-w-0 flex-1">
                 <span className="block truncate font-medium">{detection.species.commonName}</span>
-                <span className="block truncate text-sm italic text-neutral-500">
+                <span className="block truncate text-sm italic text-neutral-500 dark:text-neutral-400">
                   {detection.species.scientificName}
                 </span>
               </span>
 
-              <span className="shrink-0 tabular-nums text-sm text-neutral-500">
+              <span className="shrink-0 tabular-nums text-sm text-neutral-500 dark:text-neutral-400">
                 {formatRange(detection.start, detection.end)}
               </span>
 
@@ -75,7 +75,7 @@ function ScoreBar({ score }: { score: number }) {
           style={{ width: `${Math.round(score * 100)}%` }}
         />
       </span>
-      <span className="w-8 shrink-0 text-right text-xs tabular-nums text-neutral-500">
+      <span className="w-8 shrink-0 text-right text-xs tabular-nums text-neutral-500 dark:text-neutral-400">
         {score.toFixed(2)}
       </span>
     </span>

@@ -253,10 +253,29 @@ aussi la borne basse du curseur : proposer moins promettrait des résultats jama
 Mo et il est de toute façon transféré au worker. Un `objectURL` et un `<audio>` suffisent, et la
 lecture s'arrête à la fin de la fenêtre de 3 s pour qu'on entende exactement ce que le modèle a noté.
 
-`pnpm smoke` pilote tout ça dans un vrai Chromium : dépôt du fichier, progression, détections,
-curseur, lecture, arrêt automatique, plus zéro erreur console ou 404. Il a déjà attrapé une vraie
-casse — les fichiers `/ort/*.mjs` doivent être servis avec un **type MIME JavaScript**, sinon le
-backend WASM ne se charge pas du tout. À vérifier sur votre hébergeur statique.
+### Annulation d'une analyse
+
+Le worker **cède la main entre chaque fenêtre** (`setTimeout(0)`). Sans ça, `await inferWindow()`
+n'atteint qu'un point de contrôle de microtâches, qui ne vide pas la file de messages du worker : un
+`cancel` posté après le démarrage n'était jamais reçu, l'analyse allait à son terme, et ses résultats
+arrivaient **sous le nom du fichier suivant**. Concrètement, on pouvait afficher 24 détections
+d'oiseaux pour un fichier texte de 29 octets.
+
+L'annulation restant par nature *best-effort* — le worker peut être au milieu d'une fenêtre — chaque
+écriture d'état est en plus protégée par un jeton d'exécution : une analyse abandonnée ne peut pas
+écrire dans l'interface. Les deux régressions sont couvertes par `pnpm smoke`.
+
+`pnpm smoke` pilote tout ça dans un vrai Chromium : dépôt du fichier, progression, détections triées,
+timecodes sur la grille de 3 s, curseur, lecture, arrêt automatique, changement de fichier en cours
+d'analyse, plus zéro erreur console ou 404. Les comptages sont **exacts** (24 / 63 / 2 détections aux
+seuils 0,25 / 0,05 / 0,70) et la première ligne est comparée à la vérité terrain : un curseur mort ou
+une liste mélangée ne peuvent pas passer.
+
+Il a déjà attrapé deux vraies casses : les fichiers `/ort/*.mjs` doivent être servis avec un **type
+MIME JavaScript** sinon le backend WASM ne démarre pas — à vérifier sur votre hébergeur — et
+`pnpm dev` était **totalement inutilisable** tant que ces fichiers vivaient dans `public/` (Vite
+refuse de servir un fichier de `public/` atteint par un `import`, y compris l'import dynamique
+qu'ORT fait de son runtime). Ils sont maintenant servis par un plugin Vite, en dev comme en build.
 
 ## Suite
 

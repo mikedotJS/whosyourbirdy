@@ -42,6 +42,7 @@ export class BirdNetAnalyzer {
   private nextRequestId = 1
   /** In-flight analyses, so `dispose()` can settle them instead of stranding them. */
   private readonly pending = new Map<number, (reason: unknown) => void>()
+  private pendingReady = false
 
   constructor(
     private readonly options: { modelBaseUrl?: string; wasmPath?: string } = {},
@@ -62,13 +63,16 @@ export class BirdNetAnalyzer {
           onModelProgress?.(message.progress)
         } else if (message.type === 'ready') {
           worker.removeEventListener('message', onMessage)
+          this.pendingReady = false
           resolve()
         } else if (message.type === 'error') {
           worker.removeEventListener('message', onMessage)
           this.ready = null
+          this.pendingReady = false
           reject(new Error(message.message))
         }
       }
+      this.pendingReady = true
       worker.addEventListener('message', onMessage)
       const request: WorkerRequest = {
         type: 'init',
@@ -78,6 +82,11 @@ export class BirdNetAnalyzer {
       worker.postMessage(request)
     })
     return this.ready
+  }
+
+  /** True once the model is loaded, so callers can report the right wait. */
+  get isReady(): boolean {
+    return this.ready !== null && this.pendingReady === false
   }
 
   /**
@@ -100,6 +109,11 @@ export class BirdNetAnalyzer {
       excludeNonEvents = true,
       signal,
     } = options
+
+    // The worker processes one analysis at a time. Leaving a previous run alive
+    // would both delay this one and let its results arrive afterwards, under the
+    // new file's name.
+    this.cancelAll()
 
     const [labels] = await Promise.all([
       loadLabels(locale, this.options.modelBaseUrl),
@@ -228,6 +242,13 @@ export class BirdNetAnalyzer {
       }
       worker.postMessage(request, [audio.samples.buffer])
     })
+  }
+
+  /** Cancel every in-flight analysis, without tearing down the model. */
+  cancelAll(): void {
+    for (const requestId of this.pending.keys()) {
+      this.worker?.postMessage({ type: 'cancel', requestId } satisfies WorkerRequest)
+    }
   }
 
   /**

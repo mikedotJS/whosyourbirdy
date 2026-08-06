@@ -88,6 +88,13 @@ async function analyze(request: Extract<WorkerRequest, { type: 'analyze' }>): Pr
   const started = performance.now()
 
   for (const window of windows) {
+    // Yield to the macrotask queue so pending `message` events are actually
+    // delivered. `await inferWindow()` only reaches a microtask checkpoint, and
+    // microtasks do not drain the worker's message queue — without this, a
+    // `cancel` posted after the run started is never seen, the loop runs to
+    // completion, and the caller gets `done` for an analysis it abandoned.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
     if (cancelled.has(requestId)) {
       cancelled.delete(requestId)
       post({ type: 'cancelled', requestId })

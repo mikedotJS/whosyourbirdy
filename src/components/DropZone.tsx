@@ -24,7 +24,11 @@ export function DropZone({ onFile }: Props) {
         e.preventDefault()
         setOver(true)
       }}
-      onDragLeave={() => setOver(false)}
+      onDragLeave={(e) => {
+        // Fires when the pointer crosses onto a child too, which made the
+        // highlight flicker; only clear when the pointer truly leaves.
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOver(false)
+      }}
       onDrop={handleDrop}
       className={[
         'flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed px-6 py-16 text-center transition-colors',
@@ -34,7 +38,7 @@ export function DropZone({ onFile }: Props) {
       ].join(' ')}
     >
       <p className="text-base">Déposez un enregistrement ici</p>
-      <p className="text-sm text-neutral-500">
+      <p className="text-sm text-neutral-500 dark:text-neutral-400">
         wav, mp3, flac, m4a, ogg — idéalement en 48 kHz
       </p>
       <button

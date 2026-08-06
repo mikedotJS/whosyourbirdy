@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useBirdNet } from './hooks/useBirdNet'
 import { useSegmentPlayer } from './hooks/useSegmentPlayer'
 import { DEFAULT_MIN_CONFIDENCE } from './lib/birdnet/constants'
@@ -12,8 +12,24 @@ export default function App() {
   const [file, setFile] = useState<File | null>(null)
   const [threshold, setThreshold] = useState(DEFAULT_MIN_CONFIDENCE)
   const { state, analyze, reset, floor } = useBirdNet()
-  const player = useSegmentPlayer(file)
-  const listRef = useRef<HTMLDivElement>(null)
+  // Only wire the player once the file has actually been decoded. Creating an
+  // <audio> for every dropped file made an undecodable or 0-byte one emit a
+  // console error (ERR_REQUEST_RANGE_NOT_SATISFIABLE) for a element nothing
+  // would ever play.
+  const player = useSegmentPlayer(state.phase === 'done' ? file : null)
+
+  // Without this, dropping a file anywhere outside the drop zone — including
+  // over the results, where no drop zone is rendered at all — makes the browser
+  // navigate to it and throws the session away.
+  useEffect(() => {
+    const swallow = (event: DragEvent) => event.preventDefault()
+    window.addEventListener('dragover', swallow)
+    window.addEventListener('drop', swallow)
+    return () => {
+      window.removeEventListener('dragover', swallow)
+      window.removeEventListener('drop', swallow)
+    }
+  }, [])
 
   const handleFile = (next: File) => {
     player.stop()
@@ -47,7 +63,7 @@ export default function App() {
         <header className="flex items-baseline justify-between gap-4">
           <div>
             <h1 className="text-xl font-medium tracking-tight">whosyourbirdy</h1>
-            <p className="mt-1 text-sm text-neutral-500">
+            <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
               Identification d'oiseaux au chant. Tout se passe dans votre navigateur — aucun fichier
               n'est envoyé.
             </p>
@@ -70,7 +86,7 @@ export default function App() {
             <div className="flex items-baseline gap-3 text-sm">
               <span className="truncate font-medium">{file.name}</span>
               {state.duration > 0 && (
-                <span className="shrink-0 text-neutral-500">
+                <span className="shrink-0 text-neutral-500 dark:text-neutral-400">
                   {formatDuration(state.duration)}
                 </span>
               )}
@@ -80,7 +96,10 @@ export default function App() {
           {busy && <ProgressPanel state={state} />}
 
           {state.phase === 'error' && (
-            <div className="rounded-lg border border-red-300 bg-red-50 p-4 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
+            <div
+              role="alert"
+              className="rounded-lg border border-red-300 bg-red-50 p-4 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300"
+            >
               <p className="font-medium">L'analyse a échoué</p>
               <p className="mt-1">{state.error}</p>
             </div>
@@ -88,20 +107,24 @@ export default function App() {
 
           {state.phase === 'done' && (
             <>
-              <ThresholdSlider
-                value={threshold}
-                min={floor}
-                onChange={setThreshold}
-                total={state.detections.length}
-                visible={visible.length}
-              />
+              {state.detections.length > 0 && (
+                <ThresholdSlider
+                  value={threshold}
+                  min={floor}
+                  onChange={setThreshold}
+                  total={state.detections.length}
+                  visible={visible.length}
+                />
+              )}
 
-              <div className="flex items-baseline justify-between text-sm text-neutral-500">
-                <span>
-                  {visible.length === 0
-                    ? 'Aucune détection à ce seuil'
-                    : `${visible.length} détection${visible.length > 1 ? 's' : ''} · ` +
-                      `${speciesCount} espèce${speciesCount > 1 ? 's' : ''}`}
+              <div className="flex items-baseline justify-between text-sm text-neutral-500 dark:text-neutral-400">
+                <span role="status" aria-live="polite">
+                  {state.detections.length === 0
+                    ? 'Aucun oiseau détecté dans cet enregistrement'
+                    : visible.length === 0
+                      ? 'Aucune détection à ce seuil — abaissez le curseur'
+                      : `${visible.length} détection${visible.length > 1 ? 's' : ''} · ` +
+                        `${speciesCount} espèce${speciesCount > 1 ? 's' : ''}`}
                 </span>
                 <span className="tabular-nums">
                   {state.medianInferenceMs.toFixed(0)} ms/fenêtre
@@ -115,13 +138,11 @@ export default function App() {
                 </p>
               )}
 
-              <div ref={listRef}>
-                <DetectionList
-                  detections={visible}
-                  playing={player.playing}
-                  onPlay={player.play}
-                />
-              </div>
+              <DetectionList
+                detections={visible}
+                playing={player.playing}
+                onPlay={player.play}
+              />
             </>
           )}
         </main>
@@ -132,8 +153,10 @@ export default function App() {
   )
 }
 
+// Floors, to match the row timecodes in DetectionList; rounding here made a
+// 1.5 s file read "0:02" above a row labelled "0:00–0:03".
 function formatDuration(seconds: number): string {
   const m = Math.floor(seconds / 60)
-  const s = Math.round(seconds % 60)
+  const s = Math.floor(seconds % 60)
   return `${m}:${String(s).padStart(2, '0')}`
 }

@@ -9,7 +9,6 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "postinstall": "node scripts/copy-ort-wasm.mjs",
     "model:build": "python3 scripts/fetch_artifacts.py && .venv/bin/python scripts/convert_to_onnx.py",
     "parity": "node scripts/parity.mjs",
     "bench": "node scripts/bench.mjs",

@@ -117,9 +117,11 @@ pré-convertissant en 48 kHz.
 
 ## 4. Couverture du harnais
 
-- `TOP_K_PER_WINDOW = 64` n'est jamais atteint sur la fixture (max 2 classes au-dessus de 0,25, 44 à
-  un seuil de 0,005). Si un utilisateur descend le seuil très bas, la troncature peut supprimer des
-  détections **sans aucun signal** dans `AnalysisResult`. À corriger avec l'UI de P1, qui exposera le
-  curseur de seuil.
+- `TOP_K_PER_WINDOW = 64` n'est jamais atteint en pratique. Mesuré sur la fixture avec le plancher
+  d'analyse réel de l'interface (0,01, hors classes non-oiseaux) : **27 classes au maximum** dans la
+  fenêtre la plus chargée, pour 420 détections au total. Sur des entrées pathologiques (bruit blanc
+  11, bruit rose 0, continu/saturé 0, silence 0) on reste très en dessous. La troncature est donc un
+  filet de sécurité, et depuis P1 elle est **signalée** (`truncatedWindows` / `WindowResult.truncated`)
+  au lieu de raccourcir la liste en silence.
 - Les mesures de performance sont Linux x86_64 / Chromium. Les chiffres Mac Apple Silicon et Safari
   demandés n'ont pas pu être produits ici (voir `PERF.md`).
