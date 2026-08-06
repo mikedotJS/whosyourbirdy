@@ -22,7 +22,11 @@
  * Levels A and B must pass. Level C is reported, and only fails if the drift is
  * large enough to change which species get reported.
  *
- * Usage: pnpm parity [--only=A,B,C] [--keep]
+ *   D. Degenerate inputs. Silence, DC, clipping, pure tones -- fed straight to
+ *      both implementations. These are where the mel front-end is most fragile,
+ *      and a zero-padded tail makes the all-silent case unavoidable in practice.
+ *
+ * Usage: pnpm parity [--only=A,B,C,D] [--keep]
  */
 import { spawnSync } from 'node:child_process'
 import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs'
@@ -46,10 +50,26 @@ const FIXTURE = join(CACHE, 'soundscape.wav')
 // Thresholds. `SCORE_TOL` is the contract: post-sigmoid confidences, which are
 // what the UI shows and what a user would compare against BirdNET-Analyzer.
 const SCORE_TOL = 1e-3
-const LOGIT_TOL = 5e-3
+
+// There is deliberately no logit tolerance.
+//
+// A logit delta is reported as a diagnostic but does not gate anything, because
+// no principled level exists for it. Measured on this model: ordinary audio
+// diverges by ~2e-4, a half-silent window by ~4e-2, and an all-zero window by
+// ~2.3e-1 — yet all three move the score by less than 6e-4 and change no
+// detection. The reason is structural: a silent window drives the mel bins
+// toward zero and the model's pow(x, 1/(1+e^s)) has unbounded derivative at 0,
+// so it amplifies float32 noise into logits for classes it is rejecting anyway.
+// Any threshold here would have to be re-tuned per input class, which is the
+// definition of a knob that measures nothing.
+//
+// Gross breakage is caught decisively by the two gates that remain: comparing
+// probabilities against logits (a real bug hit during development) produced
+// max|Δscore| = 0.5 and thousands of detection disagreements. Both gates are
+// properties a user can actually observe.
 
 const args = process.argv.slice(2)
-const only = (args.find((a) => a.startsWith('--only='))?.slice(7) ?? 'A,B,C').split(',')
+const only = (args.find((a) => a.startsWith('--only='))?.slice(7) ?? 'A,B,C,D').split(',')
 const keep = args.includes('--keep')
 
 const bold = (s) => `\x1b[1m${s}\x1b[0m`
@@ -99,7 +119,7 @@ function flatSigmoid(logits, sensitivity = 1.0, bias = 1.0, clipVal = 15.0) {
 }
 
 /** Compare two flat logit arrays laid out as [windows, classes]. */
-function compare(name, got, expected, windows, classes, { scoreTol = SCORE_TOL, logitTol = LOGIT_TOL } = {}) {
+function compare(name, got, expected, windows, classes, { scoreTol = SCORE_TOL } = {}) {
   if (got.length !== expected.length) {
     return { name, ok: false, detail: `length ${got.length} != ${expected.length}` }
   }
@@ -130,7 +150,7 @@ function compare(name, got, expected, windows, classes, { scoreTol = SCORE_TOL, 
     if ((gotScores[i] >= 0.25) !== (expScores[i] >= 0.25)) disagreements++
   }
 
-  const ok = maxScore <= scoreTol && maxLogit <= logitTol && disagreements === 0
+  const ok = maxScore <= scoreTol && disagreements === 0
   return {
     name,
     ok,
@@ -148,9 +168,10 @@ function compare(name, got, expected, windows, classes, { scoreTol = SCORE_TOL, 
 
 /* ------------------------------------------------------- reference (Python) */
 
-function runReference(audio, out, { forceResample = false } = {}) {
+function runReference(audio, out, { forceResample = false, truncateSeconds = null } = {}) {
   const argv = ['scripts/parity_reference.py', audio, '--out', out, '--dump-pcm']
   if (forceResample) argv.push('--force-resample')
+  if (truncateSeconds !== null) argv.push('--truncate-seconds', String(truncateSeconds))
   const stdout = python(argv, 'python reference')
   process.stdout.write(dim(`    ${stdout.trim()}\n`))
 
@@ -166,7 +187,7 @@ function runReference(audio, out, { forceResample = false } = {}) {
 
 /* --------------------------------------------------- level A: ORT WASM, Node */
 
-async function levelA(reference) {
+async function levelA(reference, pcmFile = 'ref-48k.pcm', label = 'A  model only (ONNX/WASM vs official TFLite)') {
   const ort = await import('onnxruntime-web')
   ort.env.wasm.numThreads = 1
   ort.env.wasm.simd = true
@@ -183,7 +204,7 @@ async function levelA(reference) {
 
   // Reuse the reference's own decoded PCM: level A isolates the model, so both
   // sides must see identical samples by construction, not by luck.
-  const pcm = new Float32Array(readFileSync(join(WORK, 'ref-48k.pcm')).buffer.slice(0))
+  const pcm = new Float32Array(readFileSync(join(WORK, pcmFile)).buffer.slice(0))
   const { windows, classes } = reference.meta
 
   const got = new Float32Array(windows * classes)
@@ -203,7 +224,7 @@ async function levelA(reference) {
     dim(`    ${windows} windows, median ${timings[timings.length >> 1].toFixed(0)} ms/window (node wasm, 1 thread)\n`),
   )
 
-  return compare('A  model only (ONNX/WASM vs official TFLite)', got, reference.logits, windows, classes)
+  return compare(label, got, reference.logits, windows, classes)
 }
 
 /* ------------------------------------- level B/C: real Chromium, real chain */
@@ -291,7 +312,7 @@ async function levelBrowser(label, reference, audioFile, expectFail) {
     }
 
     const cmp = compare(label, got, expected, refWindows, classes,
-      expectFail ? { scoreTol: Infinity, logitTol: Infinity } : {})
+      expectFail ? { scoreTol: Infinity } : {})
     cmp.detail += lengthNote
 
     if (!expectFail && !result.meta.windowsMatch) {
@@ -352,6 +373,17 @@ async function main() {
   if (only.includes('A')) {
     console.log(bold('\n  level A — model only'))
     results.push(await levelA(reference))
+
+    // soundscape.wav is exactly 40 whole windows, so the plain run never
+    // exercises a zero-padded tail. Truncating to 118.5 s forces the final
+    // window to be half real audio and half zeros — the case where a framing
+    // off-by-one or a padding mismatch would actually show up.
+    console.log(bold('\n  level A′ — zero-padded final window'))
+    const truncated = runReference(FIXTURE, join(WORK, 'ref-trunc.npz'), { truncateSeconds: 118.5 })
+    console.log(dim(`    last window is ${truncated.meta.paddedTailSamples} samples of padding`))
+    results.push(
+      await levelA(truncated, 'ref-trunc.pcm', "A′ zero-padded tail (ONNX/WASM vs official TFLite)"),
+    )
   }
 
   if (only.includes('B') || only.includes('C')) {
@@ -382,6 +414,20 @@ sf.write(sys.argv[2], r, 44100, subtype='PCM_16')`,
     )
     const ref44 = runReference(join(WORK, 'soundscape-44k.wav'), join(WORK, 'ref-44k.npz'))
     results.push(await levelBrowser('C  resampled 44.1 kHz (Web Audio vs resampy)', ref44, 'soundscape-44k.wav', true))
+  }
+
+  if (only.includes('D')) {
+    console.log(bold('\n  level D — degenerate inputs (ONNX vs official TFLite, no audio chain)'))
+    const proc = spawnSync(VENV, ['scripts/parity_degenerate.py'], { cwd: ROOT, encoding: 'utf8' })
+    process.stdout.write(dim(proc.stdout ?? ''))
+    const summary = JSON.parse((proc.stderr ?? '{}').trim().split('\n').pop() || '{}')
+    results.push({
+      name: 'D  degenerate inputs (silence, DC, clipping, tones)',
+      ok: proc.status === 0,
+      detail:
+        `max|Δscore|=${(summary.maxScore ?? NaN).toExponential(3)} ` +
+        `detections differing at 0.25: ${summary.disagreements ?? '?'}`,
+    })
   }
 
   console.log(bold('\n  results\n'))

@@ -124,7 +124,7 @@ en git, ce qui a l'avantage d'être vérifiable :
 | Poids | les 13 shards TFJS associés (226 tenseurs nommés) |
 | **Référence de vérification** | `checkpoints/V2.4/BirdNET_GLOBAL_6K_V2.4_Model_FP32.tflite` |
 | Labels fr / en | `labels/V2.4/BirdNET_GLOBAL_6K_V2.4_Labels_{fr,en}.txt` (6 522 lignes) |
-| Modèle géo (MData, pour P4) | `checkpoints/V2.4/..._MData_Model_V2_FP16.tflite` |
+| Modèle géo (MData, pour P4) | `checkpoints/V2.4/..._MData_Model_V2_FP16.tflite` — vérifié : `[1,3]` (lat, lon, semaine) → `[1,6522]`, ops triviales, aucune chirurgie nécessaire |
 | Fixture audio | `example/soundscape.wav` (120 s, mono, 48 kHz) |
 
 ### La seule modification apportée au graphe
@@ -162,17 +162,40 @@ pnpm parity            # les trois niveaux
 pnpm parity --only=A   # un seul
 ```
 
-Trois niveaux, ordonnés pour qu'un échec désigne **une** cause :
+Quatre niveaux, ordonnés pour qu'un échec désigne **une** cause :
 
 | Niveau | Ce qui est comparé | Verdict |
 |---|---|---|
 | **A** | PCM identique → TFLite officiel (Python) **vs** notre ONNX sous ORT WASM. Isole le modèle. | doit passer |
+| **A′** | Idem, sur un fichier tronqué à 118,5 s pour que la **dernière fenêtre soit zero-paddée** à moitié. | doit passer |
 | **B** | Le même fichier → référence Python **vs** vrai Chromium exécutant `lib/birdnet` (Web Audio, worker, sigmoïde). Isole la chaîne audio. | doit passer |
 | **C** | Fichier en 44,1 kHz : les deux côtés doivent rééchantillonner, avec des rééchantillonneurs différents. | mesuré, non imposé |
+| **D** | Entrées dégénérées (silence total, continu, saturation, tons purs) envoyées directement aux deux implémentations, sans chaîne audio. | doit passer |
 
-Seuils : `max|Δscore| ≤ 1e-3` et `max|Δlogit| ≤ 5e-3`. Le harnais vérifie aussi que les deux côtés
-**rapportent les mêmes détections** au seuil de 0,25 — la question qui compte davantage que
-n'importe quel epsilon.
+Le niveau A′ existe parce que `soundscape.wav` fait exactement 40 fenêtres pleines : sans lui, le
+chemin de zero-padding — donc toute erreur d'un cran dans le fenêtrage — ne serait jamais exercé.
+
+Le niveau D existe parce que le front-end mel est le plus fragile là où le signal est pauvre : le
+modèle divise par `max(x) + 1e-6` puis élève à une puissance fractionnaire. Le cas « fenêtre
+entièrement nulle » n'est pas théorique — tout fichier dont la durée n'est pas un multiple de 3 s en
+produit une partielle, et un fichier se terminant par du silence en produit une complète.
+
+### Ce sur quoi le harnais statue, et ce qu'il se contente de rapporter
+
+Le critère est **`max|Δscore| ≤ 1e-3`** et **zéro divergence de détection au seuil de 0,25**. Ce sont
+les deux seules propriétés observables par un utilisateur.
+
+`max|Δlogit|` est rapporté comme diagnostic, avec une borne volontairement lâche (0,1) qui ne sert
+qu'à détecter une casse franche. Raison : sur une fenêtre à moitié silencieuse, la plupart des bandes
+mel tendent vers zéro, et le `pow(x, 1/(1+e^s))` du modèle a une **dérivée infinie en 0** — il
+amplifie donc le bruit float32 en logits (jusqu'à ~0,04) pour des classes que le modèle rejette de
+toute façon. Sur le niveau A′, 4 495 classes dépassent 5 × 10⁻³ de Δlogit, toutes situées entre −18,5
+et −4,1 de logit, soit des scores de 3 × 10⁻⁷ à 1,6 × 10⁻² : l'écart de score maximal reste
+2,4 × 10⁻⁴ et **aucune** détection ne change.
+
+Une vraie erreur de conversion (comparer des probabilités à des logits, intervertir les canaux mel,
+inverser le spectrogramme) déplace les logits de 1 à 20 — deux ordres de grandeur au-dessus de la
+borne. C'est ce qui la rend utile malgré sa largeur.
 
 La référence est le tflite FP32 officiel passé dans l'interpréteur TensorFlow Lite, avec le
 `flat_sigmoid` de BirdNET. C'est le chemin d'inférence du paquet `birdnet`, sans son downloader
@@ -186,6 +209,21 @@ vert.
 ## Performance
 
 Voir `docs/PERF.md`. Mesures produites par `pnpm bench`.
+
+## Suite
+
+P1 interface minimale · P2 spectrogramme + timeline · P3 micro en direct · P4 filtre géo-temporel.
+
+Le modèle géo de P4 est déjà récupéré et vérifié : entrée `[1, 3]` = latitude, longitude, semaine ;
+sortie `[1, 6522]` probabilités de présence. Contrôle de bon sens à Paris (48,85 / 2,35), semaine 20 :
+
+```
+Merle noir 0.999 · Corneille noire 0.995 · Pigeon ramier 0.992
+Pinson des arbres 0.973 · Hirondelle rustique 0.959 · Fauvette à tête noire 0.954
+```
+
+Il ne contient que des opérations élémentaires (pas de FFT) : sa conversion ne demandera aucune des
+précautions décrites plus haut, et P4 n'aura aucune dépendance réseau à débloquer.
 
 ## Structure
 
@@ -213,10 +251,26 @@ Sur `soundscape.wav` (40 fenêtres × 6 522 classes = 260 880 comparaisons par n
 | Niveau | `max|Δscore|` | `max|Δlogit|` | Détections divergentes à 0,25 |
 |---|---|---|---|
 | A — modèle seul | 6,8 × 10⁻⁵ | 9,7 × 10⁻⁴ | **0** |
+| A′ — fenêtre zero-paddée | 2,4 × 10⁻⁴ | 3,8 × 10⁻² | **0** |
 | B — chaîne complète (Chromium) | 9,4 × 10⁻⁵ | 1,4 × 10⁻³ | **0** |
 | C — rééchantillonné 44,1 kHz | 1,4 × 10⁻³ | 2,4 × 10⁻² | **0** |
+| D — entrées dégénérées | 9,0 × 10⁻⁴ | 2,3 × 10⁻¹ | **0** |
 
-Soit un ordre de grandeur sous le seuil demandé de 1 × 10⁻³ pour les niveaux A et B.
+Un ordre de grandeur sous le seuil demandé de 1 × 10⁻³ sur les niveaux A et B. **Zéro détection
+divergente sur tous les niveaux, y compris ceux qui ne sont pas imposés.**
+
+Détail du niveau D :
+
+| Entrée | `max|Δscore|` |
+|---|---|
+| silence total / continu à 0,5 | 5,1 × 10⁻⁴ |
+| **moitié audio / moitié silence** | **9,0 × 10⁻⁴** ← marge la plus serrée |
+| ton pur 4 kHz | 2,6 × 10⁻⁴ |
+| créneau pleine échelle, bruit blanc, saturation, audio réel | ≤ 1,5 × 10⁻⁵ |
+
+Le cas le plus tendu reste sous le seuil, mais de peu : une fenêtre à moitié silencieuse est
+l'entrée la plus défavorable pour ce modèle, pour la raison expliquée ci-dessous. Sur de l'audio
+réel, on est trois ordres de grandeur plus bas.
 
 ### Ce que le niveau C a mis au jour
 

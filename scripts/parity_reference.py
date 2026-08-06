@@ -55,7 +55,11 @@ def load_audio(path: Path, *, force_resample: bool = False) -> tuple[np.ndarray,
 
 
 def plan_windows(total: int, overlap: float = 0.0) -> list[int]:
-    hop = WINDOW_SAMPLES - round(overlap * SAMPLE_RATE)
+    # Mirrors lib/birdnet/windows.ts exactly. Note the rounding: Python's round()
+    # is round-half-to-even while JavaScript's Math.round() is round-half-up, so
+    # an overlap landing exactly on a half sample would put the two sides on
+    # different hops. floor(x + 0.5) reproduces the JS rule.
+    hop = WINDOW_SAMPLES - int(np.floor(overlap * SAMPLE_RATE + 0.5))
     return list(range(0, max(total, 1), hop))
 
 
@@ -66,10 +70,13 @@ def slice_window(samples: np.ndarray, offset: int) -> np.ndarray:
     return window
 
 
-def run(path: Path, overlap: float, force_resample: bool) -> dict:
+def run(path: Path, overlap: float, force_resample: bool,
+        truncate_seconds: float | None = None) -> dict:
     import tensorflow as tf
 
     samples, original_rate = load_audio(path, force_resample=force_resample)
+    if truncate_seconds is not None:
+        samples = samples[:int(round(truncate_seconds * SAMPLE_RATE))]
     offsets = plan_windows(len(samples), overlap)
 
     interp = tf.lite.Interpreter(model_path=str(TFLITE), num_threads=1)
@@ -98,6 +105,9 @@ def main() -> int:
     parser.add_argument("--overlap", type=float, default=0.0)
     parser.add_argument("--force-resample", action="store_true",
                         help="resample even when the file is already at 48 kHz")
+    parser.add_argument("--truncate-seconds", type=float, default=None,
+                        help="cut the audio to this length; use a non-multiple of 3 s to "
+                             "exercise the zero-padded final window")
     parser.add_argument("--dump-pcm", action="store_true",
                         help="also store the decoded PCM so the JS side can reuse it verbatim")
     args = parser.parse_args()
@@ -105,7 +115,7 @@ def main() -> int:
     if not TFLITE.exists():
         raise SystemExit(f"missing {TFLITE}; run scripts/fetch_artifacts.py first")
 
-    result = run(args.audio, args.overlap, args.force_resample)
+    result = run(args.audio, args.overlap, args.force_resample, args.truncate_seconds)
     args.out.parent.mkdir(parents=True, exist_ok=True)
 
     payload = {"logits": result["logits"], "offsets": result["offsets"]}
@@ -121,6 +131,10 @@ def main() -> int:
         "classes": int(result["logits"].shape[1]),
         "overlap": args.overlap,
         "forceResample": args.force_resample,
+        "truncateSeconds": args.truncate_seconds,
+        "paddedTailSamples": int(
+            len(result["offsets"]) * WINDOW_SAMPLES - len(result["samples"])
+        ),
         "totalSamples": int(len(result["samples"])),
     }
     args.out.with_suffix(".json").write_text(json.dumps(meta, indent=2) + "\n")
