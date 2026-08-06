@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { BirdNetAnalyzer } from '../lib/birdnet/analyze'
 import type { AnalysisProgress, Detection, ModelLoadProgress } from '../lib/birdnet/types'
+import type { SpectrogramData } from '../lib/birdnet/spectrogram'
 
 /**
  * Analysis floor.
@@ -19,6 +20,9 @@ export type Phase = 'idle' | 'loading-model' | 'decoding' | 'analyzing' | 'done'
 export interface AnalysisState {
   phase: Phase
   detections: Detection[]
+  spectrogram: SpectrogramData | null
+  /** End of the analysed region in seconds — drives the analysis front. */
+  analysedUntil: number
   modelProgress: ModelLoadProgress | null
   progress: AnalysisProgress | null
   duration: number
@@ -31,6 +35,8 @@ export interface AnalysisState {
 const initial: AnalysisState = {
   phase: 'idle',
   detections: [],
+  spectrogram: null,
+  analysedUntil: 0,
   modelProgress: null,
   progress: null,
   duration: 0,
@@ -119,7 +125,18 @@ export function useBirdNet() {
           },
           onProgress: (progress) => {
             if (!isCurrent()) return
-            setState((s) => ({ ...s, phase: 'analyzing', progress }))
+            setState((s) => ({ ...s, phase: 'analyzing', progress, analysedUntil: progress.seconds }))
+          },
+          onSpectrogram: (spectrogram) => {
+            if (!isCurrent()) return
+            setState((s) => ({ ...s, spectrogram, duration: spectrogram.duration }))
+          },
+          // Detections stream in window by window; holding them back until the
+          // end would waste the whole analysis as a moment where the picture is
+          // filling in.
+          onWindow: (result) => {
+            if (!isCurrent() || result.detections.length === 0) return
+            setState((s) => ({ ...s, detections: [...s.detections, ...result.detections] }))
           },
         },
       )
@@ -128,7 +145,10 @@ export function useBirdNet() {
       setState((s) => ({
         ...s,
         phase: 'done',
+        // Replace rather than append: the streamed copies are the same objects,
+        // but `result.detections` is sorted by score.
         detections: result.detections,
+        analysedUntil: result.duration,
         duration: result.duration,
         medianInferenceMs: result.medianInferenceMs,
         totalMs: result.totalMs,

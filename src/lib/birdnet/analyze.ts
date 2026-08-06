@@ -1,6 +1,7 @@
 import { DEFAULT_MIN_CONFIDENCE, DEFAULT_SENSITIVITY, MODEL_BASE_URL, ORT_WASM_PATH } from './constants'
 import { decodeAudio, type DecodedAudio } from './audio'
 import { isNonEvent, loadLabels, type Species } from './labels'
+import type { SpectrogramData } from './spectrogram'
 import type {
   AnalysisProgress,
   AnalysisResult,
@@ -20,6 +21,8 @@ export interface AnalyzeCallbacks {
   onProgress?: (progress: AnalysisProgress) => void
   /** Called once per window, in order, as results stream back. */
   onWindow?: (result: WindowResult) => void
+  /** Fires once, before the first window, so the picture can render early. */
+  onSpectrogram?: (spectrogram: SpectrogramData) => void
 }
 
 function median(values: ArrayLike<number>): number {
@@ -169,6 +172,16 @@ export class BirdNetAnalyzer {
         }
 
         switch (message.type) {
+          case 'spectrogram': {
+            callbacks.onSpectrogram?.({
+              columns: message.columns,
+              bins: message.bins,
+              magnitudes: message.magnitudes,
+              duration: message.duration,
+              maxHz: message.maxHz,
+            })
+            break
+          }
           case 'window': {
             const windowDetections: Detection[] = []
             for (let i = 0; i < message.classes.length; i++) {

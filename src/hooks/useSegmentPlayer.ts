@@ -21,6 +21,15 @@ export function useSegmentPlayer(file: File | null) {
    */
   const playTokenRef = useRef(0)
   const [playing, setPlaying] = useState<number | null>(null)
+  /**
+   * Live playback position, for the spectrogram playhead.
+   *
+   * Driven by requestAnimationFrame rather than `timeupdate`: that event fires
+   * about four times a second, which reads as a stuttering playhead against a
+   * smoothly scrolling picture.
+   */
+  const [position, setPosition] = useState<number | null>(null)
+  const frameRef = useRef<number | null>(null)
 
   useEffect(() => {
     if (!file) {
@@ -36,6 +45,7 @@ export function useSegmentPlayer(file: File | null) {
     // stopped, and the next click would be swallowed as a "pause".
     const onEnded = () => {
       playTokenRef.current++
+      stopTracking()
       setPlaying(null)
     }
     audio.addEventListener('ended', onEnded)
@@ -55,11 +65,40 @@ export function useSegmentPlayer(file: File | null) {
     }
   }
 
+  const stopTracking = () => {
+    if (frameRef.current !== null) {
+      cancelAnimationFrame(frameRef.current)
+      frameRef.current = null
+    }
+  }
+
+  const track = () => {
+    const audio = audioRef.current
+    if (!audio) return
+    setPosition(audio.currentTime)
+    frameRef.current = requestAnimationFrame(track)
+  }
+
   const stop = useCallback(() => {
     playTokenRef.current++
     clearTimer()
+    stopTracking()
     audioRef.current?.pause()
     setPlaying(null)
+    setPosition(null)
+  }, [])
+
+  /**
+   * Move the playhead without starting playback.
+   *
+   * Scrubbing the spectrogram is a navigation gesture, not a play gesture — it
+   * should not start sound the user did not ask for. It does move the audio
+   * element so the next play starts from where they looked.
+   */
+  const seek = useCallback((seconds: number) => {
+    const audio = audioRef.current
+    if (audio) audio.currentTime = seconds
+    setPosition(seconds)
   }, [])
 
   const play = useCallback(
@@ -70,6 +109,7 @@ export function useSegmentPlayer(file: File | null) {
       clearTimer()
       if (playing === key) {
         playTokenRef.current++
+        stopTracking()
         audio.pause()
         setPlaying(null)
         return
@@ -81,11 +121,14 @@ export function useSegmentPlayer(file: File | null) {
         () => {
           if (playTokenRef.current !== token) return // superseded while starting
           setPlaying(key)
+          stopTracking()
+          frameRef.current = requestAnimationFrame(track)
           // Stop at the end of the window rather than running on into the next
           // one, so what you hear is exactly what the model scored.
           stopTimerRef.current = window.setTimeout(() => {
             if (playTokenRef.current !== token) return
             audio.pause()
+            stopTracking()
             setPlaying(null)
           }, WINDOW_SECONDS * 1000)
         },
@@ -97,7 +140,10 @@ export function useSegmentPlayer(file: File | null) {
     [playing],
   )
 
-  useEffect(() => clearTimer, [])
+  useEffect(() => () => {
+    clearTimer()
+    stopTracking()
+  }, [])
 
-  return { play, stop, playing }
+  return { play, stop, seek, playing, position }
 }

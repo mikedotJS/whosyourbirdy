@@ -2,6 +2,7 @@
 import { inferWindow, loadModel } from './model'
 import { flatSigmoid } from './sigmoid'
 import { planWindows, sliceWindow } from './windows'
+import { computeSpectrogram } from './spectrogram'
 import type { WorkerRequest, WorkerResponse } from './types'
 import type * as ort from 'onnxruntime-web'
 
@@ -83,6 +84,23 @@ async function analyze(request: Extract<WorkerRequest, { type: 'analyze' }>): Pr
 
   const { requestId, samples, overlap, minConfidence, sensitivity, allowedClasses, topKPerWindow } =
     request
+  // Compute the picture first: the user sees the recording immediately and the
+  // analysis front then advances across something already on screen, instead of
+  // staring at an empty box for the whole run.
+  const spectrogram = computeSpectrogram(samples)
+  post(
+    {
+      type: 'spectrogram',
+      requestId,
+      columns: spectrogram.columns,
+      bins: spectrogram.bins,
+      magnitudes: spectrogram.magnitudes,
+      duration: spectrogram.duration,
+      maxHz: spectrogram.maxHz,
+    },
+    [spectrogram.magnitudes.buffer],
+  )
+
   const windows = planWindows(samples.length, overlap)
   const timings = new Float32Array(windows.length)
   const started = performance.now()

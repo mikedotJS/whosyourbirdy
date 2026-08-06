@@ -34,29 +34,34 @@ const shotsDir = process.argv.find((a) => a.startsWith('--shots='))?.slice(8) ??
  * dead slider, a shuffled list or a mis-mapped score all pass `rows > 0`.
  */
 const GOLDEN = {
-  at025: 24,
-  at070: 2,
-  at005: 63,
-  top: {
-    common: 'Mésange à tête noire',
-    scientific: 'Poecile atricapillus',
-    range: '0:00–0:03',
-    score: 0.81,
-  },
+  detections025: 24,
+  detections070: 2,
+  detections005: 63,
+  species025: 8,
+  top: { common: 'Mésange à tête noire', scientific: 'Poecile atricapillus', count: '2×', score: 0.81 },
 }
 
+const ROWS = 'main > ul > li'
+
 async function readRows(page) {
-  return page.locator('ul > li').evaluateAll((items) =>
+  return page.locator('main > ul > li').evaluateAll((items) =>
     items.map((li) => {
       const text = li.innerText.split('\n').map((t) => t.trim()).filter(Boolean)
       return {
         common: text[0],
         scientific: text[1],
-        range: text.find((t) => /^\d:\d\d–\d:\d\d$/.test(t)) ?? '',
-        score: Number(text[text.length - 1]),
+        count: text.find((t) => /^\d+×$/.test(t)) ?? '',
+        score: Number(text.find((t) => /^0\.\d\d$/.test(t))),
       }
     }),
   )
+}
+
+/** Read the detection count out of the summary line. */
+async function countDetections(page) {
+  const text = await page.locator('main').innerText()
+  const match = text.match(/(\d+)\s+détection/)
+  return match ? Number(match[1]) : -1
 }
 
 function toSeconds(clock) {
@@ -144,58 +149,64 @@ async function main() {
     await page.waitForTimeout(400)
     await page.screenshot({ path: join(shotsDir, '3-results.png'), fullPage: true })
 
-    // Golden values from the parity ground truth. `rows > 0` would pass with the
-    // species, scores and timecodes all shuffled; these would not.
-    const rows = await page.locator('ul > li').count()
-    check('exactly the expected detections at 0.25', rows === GOLDEN.at025, `${rows} rows`)
+    check('the spectrogram is rendered', (await page.locator('canvas').count()) === 1)
 
+    // Golden values from the parity ground truth. `rows > 0` would pass with the
+    // species, scores and counts all shuffled; these would not.
+    const rows = await page.locator(ROWS).count()
+    check('exactly the expected species at 0.25', rows === GOLDEN.species025, `${rows} species`)
+
+    const summary = await page.locator('main').innerText()
     check(
-      'the file name and duration match the file analysed',
-      (await page.locator('main').innerText()).includes('2:00'),
+      'the summary states the species and detection counts',
+      summary.includes(`${GOLDEN.species025} espèces`) &&
+        summary.includes(`${GOLDEN.detections025} détections`) &&
+        summary.includes('2:00'),
+      summary.split('\n').find((l) => /espèces/.test(l)) ?? '',
     )
 
     const parsed = await readRows(page)
     check(
-      'top detection matches the reference exactly',
+      'top species matches the reference exactly',
       parsed[0].common === GOLDEN.top.common &&
         parsed[0].scientific === GOLDEN.top.scientific &&
-        parsed[0].range === GOLDEN.top.range &&
+        parsed[0].count === GOLDEN.top.count &&
         parsed[0].score === GOLDEN.top.score,
       JSON.stringify(parsed[0]),
     )
 
     const scores = parsed.map((r) => r.score)
     check(
-      'detections are sorted by descending score',
+      'species are sorted by descending best score',
       scores.every((v, i) => i === 0 || v <= scores[i - 1]),
       `${scores[0]} … ${scores[scores.length - 1]}`,
     )
 
-    // overlap is 0, so every window starts on a 3 s boundary and is 3 s long.
-    const offGrid = parsed.filter((r) => {
-      const [start, end] = r.range.split('–').map(toSeconds)
-      return start % 3 !== 0 || end - start !== 3 || end > Math.ceil(120 / 3) * 3
-    })
-    check('every timecode sits on the 3 s analysis grid', offGrid.length === 0,
-      offGrid.slice(0, 2).map((r) => r.range).join(', '))
+    // Focusing a species reveals its occurrences, every one on the 3 s grid.
+    await page.locator(`${ROWS} button`).first().click()
+    await page.waitForTimeout(300)
+    const chips = await page.locator(`${ROWS}`).first().locator('ul button').allInnerTexts()
+    check('focusing a species reveals its occurrences', chips.length === 2, chips.join(' '))
+    const offGrid = chips.filter((c) => toSeconds(c.split(' ')[0]) % 3 !== 0)
+    check('every occurrence sits on the 3 s analysis grid', offGrid.length === 0, offGrid.join(', '))
 
     // The slider must filter in memory, not re-run the model.
     const t0 = Date.now()
     await page.locator('input[type=range]').fill('0.7')
     await page.waitForTimeout(120)
-    const high = await page.locator('ul > li').count()
+    const high = await countDetections(page)
     const elapsed = Date.now() - t0
-    // Strict: `high <= rows` is satisfied by an onChange that does nothing at all.
+    // Strict: a `>=` comparison is satisfied by an onChange that does nothing.
     check(
       'raising the threshold hides detections, instantly',
-      high === GOLDEN.at070 && elapsed < 1000,
-      `${rows} → ${high} rows in ${elapsed} ms`,
+      high === GOLDEN.detections070 && elapsed < 1000,
+      `${GOLDEN.detections025} → ${high} detections in ${elapsed} ms`,
     )
 
     await page.locator('input[type=range]').fill('0.05')
-    await page.waitForTimeout(120)
-    const low = await page.locator('ul > li').count()
-    check('lowering the threshold reveals more', low === GOLDEN.at005, `${low} rows at 0.05`)
+    await page.waitForTimeout(150)
+    const low = await countDetections(page)
+    check('lowering the threshold reveals more', low === GOLDEN.detections005, `${low} at 0.05`)
 
     await page.locator('input[type=range]').fill('0.25')
     await page.waitForTimeout(120)
@@ -203,7 +214,7 @@ async function main() {
     // Assert on what a user perceives — the row reporting itself as playing —
     // rather than on the <audio> element, which is created via `new Audio()` and
     // never attached to the document.
-    const firstRow = page.locator('ul > li button').first()
+    const firstRow = page.locator(`${ROWS} ul button`).first()
     await firstRow.click()
     await page.waitForTimeout(700)
     check(
@@ -240,7 +251,7 @@ async function main() {
 
     check(
       'a superseded analysis cannot report results under the new file',
-      !/détections? ·/.test(after) && (await page.locator('ul > li').count()) === 0,
+      !/espèces? ·/.test(after) && (await page.locator(ROWS).count()) === 0,
       after.split('\n').slice(0, 3).join(' | '),
     )
     check(
@@ -258,7 +269,7 @@ async function main() {
     const afterReset = await page.locator('main').innerText()
     check(
       'reset mid-analysis leaves the drop zone and nothing else',
-      /Déposez un enregistrement/.test(afterReset) && (await page.locator('ul > li').count()) === 0,
+      /Déposez un enregistrement/.test(afterReset) && (await page.locator(ROWS).count()) === 0,
       afterReset.split('\n').slice(0, 2).join(' | '),
     )
 

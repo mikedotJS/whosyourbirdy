@@ -1,21 +1,25 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useBirdNet } from './hooks/useBirdNet'
 import { useSegmentPlayer } from './hooks/useSegmentPlayer'
 import { DEFAULT_MIN_CONFIDENCE } from './lib/birdnet/constants'
+import type { Species } from './lib/birdnet/labels'
+import type { Detection } from './lib/birdnet/types'
 import { DropZone } from './components/DropZone'
 import { ProgressPanel } from './components/ProgressPanel'
-import { DetectionList } from './components/DetectionList'
+import { Spectrogram } from './components/Spectrogram'
+import { SpeciesList, type SpeciesGroup } from './components/SpeciesList'
 import { ThresholdSlider } from './components/ThresholdSlider'
 import { Attribution } from './components/Attribution'
 
 export default function App() {
   const [file, setFile] = useState<File | null>(null)
   const [threshold, setThreshold] = useState(DEFAULT_MIN_CONFIDENCE)
+  const [focused, setFocused] = useState<Species | null>(null)
   const { state, analyze, reset, floor } = useBirdNet()
+
   // Only wire the player once the file has actually been decoded. Creating an
   // <audio> for every dropped file made an undecodable or 0-byte one emit a
-  // console error (ERR_REQUEST_RANGE_NOT_SATISFIABLE) for a element nothing
-  // would ever play.
+  // console error for an element nothing would ever play.
   const player = useSegmentPlayer(state.phase === 'done' ? file : null)
 
   // Without this, dropping a file anywhere outside the drop zone — including
@@ -33,12 +37,14 @@ export default function App() {
 
   const handleFile = (next: File) => {
     player.stop()
+    setFocused(null)
     setFile(next)
     void analyze(next)
   }
 
   const handleReset = () => {
     player.stop()
+    setFocused(null)
     setFile(null)
     reset()
   }
@@ -50,16 +56,48 @@ export default function App() {
     [state.detections, threshold],
   )
 
-  const speciesCount = useMemo(
-    () => new Set(visible.map((d) => d.species.index)).size,
-    [visible],
+  const groups = useMemo<SpeciesGroup[]>(() => {
+    const byIndex = new Map<number, SpeciesGroup>()
+    for (const detection of visible) {
+      const existing = byIndex.get(detection.species.index)
+      if (existing) {
+        existing.count++
+        existing.bestScore = Math.max(existing.bestScore, detection.score)
+        existing.occurrences.push(detection)
+      } else {
+        byIndex.set(detection.species.index, {
+          species: detection.species,
+          count: 1,
+          bestScore: detection.score,
+          occurrences: [detection],
+        })
+      }
+    }
+    const result = [...byIndex.values()]
+    result.sort((a, b) => b.bestScore - a.bestScore)
+    for (const group of result) group.occurrences.sort((a, b) => a.start - b.start)
+    return result
+  }, [visible])
+
+  // A focused species the threshold has just filtered out would leave the
+  // spectrogram highlighting nothing.
+  useEffect(() => {
+    if (focused && !groups.some((g) => g.species.index === focused.index)) setFocused(null)
+  }, [groups, focused])
+
+  const playDetection = useCallback(
+    (detection: Detection) => {
+      player.play(detection.start, detection.windowIndex * 10000 + detection.species.index)
+    },
+    [player],
   )
 
-  const busy = state.phase === 'loading-model' || state.phase === 'decoding' || state.phase === 'analyzing'
+  const busy =
+    state.phase === 'loading-model' || state.phase === 'decoding' || state.phase === 'analyzing'
 
   return (
     <div className="min-h-dvh bg-white text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100">
-      <div className="mx-auto flex min-h-dvh max-w-3xl flex-col gap-8 px-6 py-10">
+      <div className="mx-auto flex min-h-dvh max-w-4xl flex-col gap-6 px-6 py-10">
         <header className="flex items-baseline justify-between gap-4">
           <div>
             <h1 className="text-xl font-medium tracking-tight">whosyourbirdy</h1>
@@ -79,18 +117,32 @@ export default function App() {
           )}
         </header>
 
-        <main className="flex flex-1 flex-col gap-6">
+        <main className="flex flex-1 flex-col gap-5">
           {!file && <DropZone onFile={handleFile} />}
 
           {file && (
             <div className="flex items-baseline gap-3 text-sm">
               <span className="truncate font-medium">{file.name}</span>
               {state.duration > 0 && (
-                <span className="shrink-0 text-neutral-500 dark:text-neutral-400">
+                <span className="shrink-0 tabular-nums text-neutral-500 dark:text-neutral-400">
                   {formatDuration(state.duration)}
                 </span>
               )}
             </div>
+          )}
+
+          {/* The picture arrives before the first window, so the analysis front
+              advances across something already on screen. */}
+          {state.spectrogram && (
+            <Spectrogram
+              spectrogram={state.spectrogram}
+              detections={visible}
+              focused={focused}
+              analysedUntil={state.analysedUntil}
+              duration={state.duration}
+              playhead={player.position}
+              onScrub={player.seek}
+            />
           )}
 
           {busy && <ProgressPanel state={state} />}
@@ -121,14 +173,12 @@ export default function App() {
                 <span role="status" aria-live="polite">
                   {state.detections.length === 0
                     ? 'Aucun oiseau détecté dans cet enregistrement'
-                    : visible.length === 0
+                    : groups.length === 0
                       ? 'Aucune détection à ce seuil — abaissez le curseur'
-                      : `${visible.length} détection${visible.length > 1 ? 's' : ''} · ` +
-                        `${speciesCount} espèce${speciesCount > 1 ? 's' : ''}`}
+                      : `${groups.length} espèce${groups.length > 1 ? 's' : ''} · ` +
+                        `${visible.length} détection${visible.length > 1 ? 's' : ''}`}
                 </span>
-                <span className="tabular-nums">
-                  {state.medianInferenceMs.toFixed(0)} ms/fenêtre
-                </span>
+                <span className="tabular-nums">{state.medianInferenceMs.toFixed(0)} ms/fenêtre</span>
               </div>
 
               {state.truncatedWindows > 0 && (
@@ -138,10 +188,12 @@ export default function App() {
                 </p>
               )}
 
-              <DetectionList
-                detections={visible}
+              <SpeciesList
+                groups={groups}
+                focused={focused}
                 playing={player.playing}
-                onPlay={player.play}
+                onFocus={setFocused}
+                onPlay={playDetection}
               />
             </>
           )}
@@ -153,8 +205,8 @@ export default function App() {
   )
 }
 
-// Floors, to match the row timecodes in DetectionList; rounding here made a
-// 1.5 s file read "0:02" above a row labelled "0:00–0:03".
+// Floors, to match the row timecodes; rounding here made a 1.5 s file read
+// "0:02" above a row labelled "0:00–0:03".
 function formatDuration(seconds: number): string {
   const m = Math.floor(seconds / 60)
   const s = Math.floor(seconds % 60)

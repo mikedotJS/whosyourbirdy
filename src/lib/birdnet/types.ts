@@ -94,6 +94,19 @@ export type WorkerRequest =
 /** Messages the worker emits. */
 export type WorkerResponse =
   | { type: 'load-progress'; progress: ModelLoadProgress }
+  | {
+      /**
+       * Sent before the first window so the picture is on screen while the
+       * analysis front sweeps across it.
+       */
+      type: 'spectrogram'
+      requestId: number
+      columns: number
+      bins: number
+      magnitudes: Uint8Array
+      duration: number
+      maxHz: number
+    }
   | { type: 'ready' }
   | {
       type: 'window'

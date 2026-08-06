@@ -14,11 +14,12 @@ téléchargé une fois, mis en cache, et l'inférence tourne en WebAssembly dans
 
 ## État
 
-**P0 et P1 livrés** : le pipeline, la preuve de parité numérique avec l'implémentation officielle, et
-une interface minimale fonctionnelle — dépôt d'un fichier, détections triées (espèce, score,
-timecode), seuil de confiance réglable, lecture du segment au clic.
+**P0, P1 et P2 livrés** : le pipeline, la preuve de parité numérique avec l'implémentation
+officielle, et l'interface construite autour du spectrogramme — détections superposées en bandes
+temporelles, timeline scrubbable, regroupement par espèce avec occurrences, seuil de confiance
+réglable, lecture du segment au clic.
 
-Le spectrogramme et la timeline arrivent en P2.
+Restent P3 (micro en direct) et P4 (filtre géo-temporel).
 
 > **Une limite connue dépasse le contrat de 1 × 10⁻³.** Sur la **dernière fenêtre** d'un fichier dont
 > la durée n'est pas un multiple de 3 s (donc zero-paddée), l'écart de score atteint 1,7 × 10⁻².
@@ -239,11 +240,47 @@ vert.
 
 Voir `docs/PERF.md`. Mesures produites par `pnpm bench`.
 
-## L'interface (P1)
+## L'interface
 
-Volontairement minimale : c'est P2 qui portera la direction visuelle, autour du spectrogramme.
+### La décision structurante : la couleur ne peut pas porter l'espèce
 
-Deux décisions valent d'être expliquées :
+Le modèle connaît **6 522 classes**. Aucune palette ne survit à ça, et générer des teintes au-delà
+d'un ordre fixe finit forcément par donner la même couleur à deux espèces. Huit teintes simultanées
+au-dessus d'un spectrogramme, c'est du bruit, pas de l'information.
+
+L'identité vit donc dans la **liste** (du texte), et le lien liste ↔ image passe par **une seule
+couleur focalisée à la fois**. Concrètement :
+
+- **Spectrogramme** : encodage *séquentiel* d'une magnitude → une seule rampe, claire vers foncée, et
+  **achromatique**. C'est aussi la convention en bioacoustique (Raven, Audacity), mais surtout ça
+  libère tout le canal chromatique pour la superposition.
+- **Bandes de détection** : trois états — discrète (présente), focalisée (bleu), en lecture (orange).
+  La confiance passe par l'**opacité**, pas par la teinte.
+- Les deux teintes sont validées contre les surfaces réelles de l'application : ΔE 24,7 en clair /
+  26,8 en sombre, ≥ 3:1 sur leur fond dans les deux modes.
+
+Le spectrogramme d'affichage est une STFT ordinaire (trames de 1024, 0–15 kHz, échelle dB avec
+normalisation par percentiles). **Il n'a rien à voir avec les mel-spectrogrammes du modèle**, qui
+restent dans le graphe et auxquels on ne touche pas. Il est calculé dans le worker — qui possède déjà
+le PCM après le transfert — et renvoyé en grille 8 bits : ~450 Ko au lieu des 23 Mo des échantillons.
+
+### Le mouvement, et ce qu'il sert
+
+La mise en page a été arrêtée avant d'animer quoi que ce soit. Rien n'est décoratif :
+
+- **Le front d'analyse** glisse au lieu de sauter d'une fenêtre à l'autre. C'est le moment où
+  l'utilisateur attend : un bond de 3 s toutes les ~100 ms se lit comme un bégaiement, un glissement
+  se lit comme une progression. La zone pas encore analysée est un **voile**, pas du vide —
+  l'enregistrement est là depuis le début, c'est la connaissance qui avance.
+- **Les détections arrivent en flux**, chacune sur son horloge (stagger de 28 ms sur les lignes,
+  croissance depuis la ligne de base pour les bandes). Pas de fondu global.
+- **Le focus se fait en fondu** entre l'état discret et l'état focalisé : une transition d'état, pas
+  un saut.
+- La boucle d'animation **s'arrête dès que tout est arrivé** — un rAF permanent sur une image fixe
+  est une fuite de batterie, pas une animation.
+- `prefers-reduced-motion` réduit chaque animation à son état final.
+
+### Deux décisions héritées de P1
 
 **Le seuil filtre en mémoire, il ne relance rien.** L'analyse tourne une fois à un plancher de 0,01 et
 le curseur filtre le résultat déjà en RAM — ~140 ms au lieu de relancer 40 inférences. Ce plancher est
