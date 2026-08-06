@@ -62,7 +62,10 @@ ARTIFACTS: dict[str, tuple[str, str]] = {
     # its checkpoint restores by object-graph position, which a freshly built
     # model does not reproduce. The TFJS manifest names every weight
     # (`LAYER/kernel`, `LAYER/gamma`, ...), so the mapping is unambiguous.
-    f"{TFJS}/model.json": ("tfjs_model.json", ""),
+    f"{TFJS}/model.json": (
+        "tfjs_model.json",
+        "cbc10d46bb3c5cac268e55ec3e1314cf520dfc0b15b626025cee941876d5e67a",
+    ),
 }
 
 # The 13 weight shards referenced by tfjs_model.json's weightsManifest.
