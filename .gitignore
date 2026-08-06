@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.venv/
+.cache/
+*.tsbuildinfo
+
+# Model weights are NOT redistributed here. They are regenerated from the
+# official BirdNET-Analyzer artifacts by `pnpm model:build` — see README.
+public/models/
+public/ort/
+
+# Parity/bench outputs
+.parity/
+__pycache__/
+*.pyc

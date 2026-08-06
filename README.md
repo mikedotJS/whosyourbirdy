@@ -1,0 +1,197 @@
+# whosyourbirdy
+
+Identification d'oiseaux au chant, **entièrement dans le navigateur**, au-dessus du modèle
+[BirdNET v2.4](https://github.com/birdnet-team/BirdNET-Analyzer) du Cornell Lab of Ornithology et de
+la TU Chemnitz.
+
+Aucun backend, aucun upload : le fichier audio ne quitte jamais la machine. Le modèle (~52 Mo) est
+téléchargé une fois, mis en cache, et l'inférence tourne en WebAssembly dans un Web Worker.
+
+> **Powered by BirdNET** — K. Lisa Yang Center for Conservation Bioacoustics, Cornell Lab of
+> Ornithology & Chemnitz University of Technology.
+> Modèle sous **CC BY-NC-SA 4.0** : usage **non commercial**, partage à l'identique, attribution
+> obligatoire. Ce projet est non commercial.
+
+## État
+
+**P0 livré** : le pipeline d'analyse et la preuve de parité numérique avec l'implémentation
+officielle. Pas encore d'interface — elle arrive en P1.
+
+## Démarrage
+
+```bash
+pnpm install
+
+# Environnement Python pour la construction du modèle et le test de parité
+python3 -m venv .venv
+.venv/bin/pip install numpy==1.26.4 tensorflow-cpu==2.15.1 tf2onnx==1.16.1 \
+                      onnx==1.16.2 onnxruntime==1.19.2 soundfile librosa resampy
+
+pnpm model:build   # récupère les artefacts officiels et produit public/models/
+pnpm parity        # prouve que le pipeline reproduit BirdNET
+pnpm dev
+```
+
+Les poids ne sont **pas** dans le dépôt. `pnpm model:build` les régénère depuis les artefacts
+officiels, ce qui garde le dépôt léger et évite de redistribuer un modèle sous licence NC.
+
+## La chaîne audio, et pourquoi chaque choix
+
+### 1. Décodage — `decodeAudioData`
+
+Le navigateur décode wav, mp3, flac, m4a, ogg selon son moteur. On ne réimplémente aucun décodeur.
+
+### 2. Downmix mono par moyenne des canaux
+
+BirdNET analyse du mono. La moyenne (et non la sélection du canal gauche) préserve les sources
+présentes uniquement sur un canal.
+
+### 3. Rééchantillonnage à 48 kHz — `OfflineAudioContext`
+
+Le modèle a été entraîné à 48 kHz. Le rééchantillonnage est **délégué au navigateur** : écrire notre
+propre rééchantillonneur ne nous rapprocherait pas de `resampy` (celui de BirdNET), ça déplacerait
+juste l'écart. Un fichier déjà en 48 kHz n'est pas touché du tout — c'est le cas le plus fréquent en
+enregistrement de terrain, et il est alors **bit-exact** vis-à-vis de la référence.
+
+L'écart résiduel sur les fichiers à convertir est **mesuré** par le niveau C du test de parité,
+jamais compensé.
+
+### 4. Fenêtrage : 144 000 échantillons, hop de 144 000
+
+Soit exactement 3 s, la taille d'entrée du modèle. Le paramètre `overlap` (0 à 2,9 s, comme
+BirdNET-Analyzer) réduit le hop. La dernière fenêtre est **zero-paddée** et conservée, pas jetée :
+une détection dans les dernières secondes ne doit pas disparaître.
+
+### 5. Ce qu'on ne fait surtout pas
+
+**Pas de normalisation d'amplitude** (ni peak, ni RMS), **pas de filtre** passe-haut ou passe-bas,
+**pas d'aller-retour en int16**.
+
+Ce n'est pas une préférence de style : le modèle **normalise déjà lui-même**. Sa couche mel commence
+par un min-max par fenêtre de 3 s vers `[-1, 1]` :
+
+```
+x = x - min(x);  x = x / (max(x) + 1e-6);  x = (x - 0.5) * 2
+```
+
+Normaliser en amont change les statistiques de fenêtre sur lesquelles le modèle a été entraîné et
+dégrade les scores. `decodeAudioData` sort déjà du float dans `[-1, 1]` : c'est exactement le domaine
+attendu.
+
+### 6. Inférence dans un Web Worker
+
+6 522 classes × N fenêtres bloquerait le thread principal. Le worker émet **un message par fenêtre**,
+donc les détections arrivent en flux et l'interface peut afficher le front d'analyse progresser.
+
+Le PCM est **transféré** (pas copié) vers le worker : un fichier de 2 minutes se déplace comme un
+pointeur, pas comme 23 Mo.
+
+### 7. Sortie : des logits, pas des probabilités
+
+Le modèle renvoie des logits. Le score s'obtient par le *flat sigmoid* de BirdNET :
+
+```
+y = -sensitivity * clip(logit + (bias - 1) * 10, ±15)
+score = y >= 0 ? e^-|y| / (1 + e^-|y|) : 1 / (1 + e^-|y|)
+```
+
+Aux valeurs par défaut (`sensitivity = 1.0`) cela se réduit à la sigmoïde logistique simple — mais le
+**clip à ±15** compte, et la sensibilité n'est réglable que si l'activation reste hors du graphe.
+C'est pourquoi on exporte les logits.
+
+**Sigmoïde et non softmax** : c'est du multi-label. Plusieurs espèces peuvent chanter sur la même
+fenêtre, les scores ne somment pas à 1.
+
+## D'où vient le modèle
+
+Les builds ONNX publiés sur Hugging Face et les poids servis par Zenodo sont inaccessibles depuis
+certains réseaux (politique d'egress). On reconstruit donc le modèle depuis des artefacts atteignables
+en git, ce qui a l'avantage d'être vérifiable :
+
+| Élément | Source (tag `v1.5.1` de `birdnet-team/BirdNET-Analyzer`) |
+|---|---|
+| Topologie | `checkpoints/V2.4/..._Model_TFJS/static/model/model.json` (config Keras) |
+| Poids | les 13 shards TFJS associés (226 tenseurs nommés) |
+| **Référence de vérification** | `checkpoints/V2.4/BirdNET_GLOBAL_6K_V2.4_Model_FP32.tflite` |
+| Labels fr / en | `labels/V2.4/BirdNET_GLOBAL_6K_V2.4_Labels_{fr,en}.txt` (6 522 lignes) |
+| Modèle géo (MData, pour P4) | `checkpoints/V2.4/..._MData_Model_V2_FP16.tflite` |
+| Fixture audio | `example/soundscape.wav` (120 s, mono, 48 kHz) |
+
+### La seule modification apportée au graphe
+
+BirdNET calcule ses deux mel-spectrogrammes **dans le graphe**, via `tf.signal.stft`. Deux détails
+rendent ce graphe inconvertible tel quel :
+
+- BirdNET utilise la **partie réelle** de la STFT, pas son module (`tf.cast(spec, 'float32')` sur un
+  complexe). Le convertisseur `tf2onnx` ne sait traiter que le motif `RFFT2D → ComplexAbs`.
+- L'opérateur `DFT` d'ONNX n'est pas supporté de façon fiable par le backend WASM d'ONNX Runtime Web.
+
+Or trois opérations consécutives sont **linéaires** dans le signal fenêtré : la fenêtre de Hann, la
+DFT réelle, et le banc de filtres mel. Leur composition est donc une seule matrice constante :
+
+```
+mel[t,m] = Σ_n frames[t,n] · ( hann[n] · Σ_k cos(2πnk/N) · MB[k,m] )
+```
+
+et « faire glisser une matrice fixe sur un signal avec un pas » est exactement une **convolution 1-D
+stridée**. Tout le front-end STFT + mel devient donc **une seule `Conv1D`** dont le noyau est dérivé
+de la fenêtre et du banc de filtres du modèle lui-même.
+
+Ce n'est pas une réimplémentation du mel-spectrogramme : c'est le même opérateur linéaire,
+matérialisé. Rien n'est re-dérivé ni re-réglé — les bancs de filtres, les tailles de trame et le
+`magnitude_scaling` viennent tous de la config et du checkpoint officiels. Bénéfice secondaire : on
+remplace ~1 GFLOP de DFT dense par une convolution à 96 canaux.
+
+`scripts/convert_to_onnx.py` **assert** l'équivalence à chaque étape et refuse d'écrire un modèle qui
+ne correspond pas. Voir `scripts/birdnet_mel.py` pour la dérivation complète.
+
+## Le test de parité
+
+```bash
+pnpm parity            # les trois niveaux
+pnpm parity --only=A   # un seul
+```
+
+Trois niveaux, ordonnés pour qu'un échec désigne **une** cause :
+
+| Niveau | Ce qui est comparé | Verdict |
+|---|---|---|
+| **A** | PCM identique → TFLite officiel (Python) **vs** notre ONNX sous ORT WASM. Isole le modèle. | doit passer |
+| **B** | Le même fichier → référence Python **vs** vrai Chromium exécutant `lib/birdnet` (Web Audio, worker, sigmoïde). Isole la chaîne audio. | doit passer |
+| **C** | Fichier en 44,1 kHz : les deux côtés doivent rééchantillonner, avec des rééchantillonneurs différents. | mesuré, non imposé |
+
+Seuils : `max|Δscore| ≤ 1e-3` et `max|Δlogit| ≤ 5e-3`. Le harnais vérifie aussi que les deux côtés
+**rapportent les mêmes détections** au seuil de 0,25 — la question qui compte davantage que
+n'importe quel epsilon.
+
+La référence est le tflite FP32 officiel passé dans l'interpréteur TensorFlow Lite, avec le
+`flat_sigmoid` de BirdNET. C'est le chemin d'inférence du paquet `birdnet`, sans son downloader
+Zenodo (injoignable ici).
+
+Le niveau B ne se contente pas de comparer des tenseurs : il vérifie aussi que les détections
+produites par `BirdNetAnalyzer` (worker, seuillage, mapping des labels) correspondent à ce que les
+logits bruts impliquent. Une erreur dans le worker ne peut donc pas se cacher derrière un niveau B
+vert.
+
+## Performance
+
+Voir `docs/PERF.md`. Mesures produites par `pnpm bench`.
+
+## Structure
+
+```
+src/lib/birdnet/     le pipeline (audio, fenêtrage, modèle, worker, sigmoïde, labels)
+scripts/             récupération des artefacts, conversion ONNX, parité, bench
+public/models/       poids + labels + LICENSE (générés, non versionnés)
+```
+
+## Licences
+
+- **Code** de ce dépôt : MIT.
+- **Modèle BirdNET** : CC BY-NC-SA 4.0 — voir `public/models/LICENSE`, généré avec les poids.
+  Usage non commercial uniquement.
+
+Citation :
+
+> Kahl, S., Wood, C. M., Eibl, M., & Klinck, H. (2021). BirdNET: A deep learning solution for avian
+> diversity monitoring. *Ecological Informatics*, 61, 101236.
