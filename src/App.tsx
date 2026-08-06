@@ -14,7 +14,11 @@ import { Attribution } from './components/Attribution'
 export default function App() {
   const [file, setFile] = useState<File | null>(null)
   const [threshold, setThreshold] = useState(DEFAULT_MIN_CONFIDENCE)
-  const [focused, setFocused] = useState<Species | null>(null)
+  // Pinned by a click, hovered by the pointer. Separate slots — sharing one is
+  // what made hover latch and a click deselect the row under the cursor.
+  const [pinned, setPinned] = useState<Species | null>(null)
+  const [hovered, setHovered] = useState<Species | null>(null)
+  const focused = pinned ?? hovered
   const { state, analyze, reset, floor } = useBirdNet()
 
   // Only wire the player once the file has actually been decoded. Creating an
@@ -37,14 +41,16 @@ export default function App() {
 
   const handleFile = (next: File) => {
     player.stop()
-    setFocused(null)
+    setPinned(null)
+    setHovered(null)
     setFile(next)
     void analyze(next)
   }
 
   const handleReset = () => {
     player.stop()
-    setFocused(null)
+    setPinned(null)
+    setHovered(null)
     setFile(null)
     reset()
   }
@@ -82,8 +88,9 @@ export default function App() {
   // A focused species the threshold has just filtered out would leave the
   // spectrogram highlighting nothing.
   useEffect(() => {
-    if (focused && !groups.some((g) => g.species.index === focused.index)) setFocused(null)
-  }, [groups, focused])
+    if (pinned && !groups.some((g) => g.species.index === pinned.index)) setPinned(null)
+    if (hovered && !groups.some((g) => g.species.index === hovered.index)) setHovered(null)
+  }, [groups, pinned, hovered])
 
   const playDetection = useCallback(
     (detection: Detection) => {
@@ -140,7 +147,8 @@ export default function App() {
               focused={focused}
               analysedUntil={state.analysedUntil}
               duration={state.duration}
-              playhead={player.position}
+              positionRef={player.positionRef}
+              isPlaying={player.playing !== null}
               onScrub={player.seek}
             />
           )}
@@ -190,9 +198,11 @@ export default function App() {
 
               <SpeciesList
                 groups={groups}
-                focused={focused}
+                pinned={pinned}
+                hovered={hovered}
                 playing={player.playing}
-                onFocus={setFocused}
+                onPin={setPinned}
+                onHover={setHovered}
                 onPlay={playDetection}
               />
             </>

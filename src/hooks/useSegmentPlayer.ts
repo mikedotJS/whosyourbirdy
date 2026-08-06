@@ -22,13 +22,18 @@ export function useSegmentPlayer(file: File | null) {
   const playTokenRef = useRef(0)
   const [playing, setPlaying] = useState<number | null>(null)
   /**
-   * Live playback position, for the spectrogram playhead.
+   * Live playback position, for the spectrogram playhead — in a REF, not state.
    *
-   * Driven by requestAnimationFrame rather than `timeupdate`: that event fires
-   * about four times a second, which reads as a stuttering playhead against a
-   * smoothly scrolling picture.
+   * It changes every frame. As state it re-rendered App, the species list and
+   * every occurrence chip 60 times a second, and made the canvas effect tear
+   * down and rebuild its backing store twice per frame (measured: 121 canvas
+   * reallocations/s during playback). The canvas reads this ref inside its own
+   * animation loop instead.
+   *
+   * Driven by requestAnimationFrame rather than `timeupdate`, which fires about
+   * four times a second and reads as a stuttering playhead.
    */
-  const [position, setPosition] = useState<number | null>(null)
+  const positionRef = useRef<number | null>(null)
   const frameRef = useRef<number | null>(null)
 
   useEffect(() => {
@@ -48,10 +53,16 @@ export function useSegmentPlayer(file: File | null) {
       stopTracking()
       setPlaying(null)
     }
+    // `pause` covers the window timer and any external pause; without it the
+    // playhead kept being painted, and the canvas kept animating, long after the
+    // sound had stopped.
+    const onPause = () => setPlaying(null)
     audio.addEventListener('ended', onEnded)
+    audio.addEventListener('pause', onPause)
 
     return () => {
       audio.removeEventListener('ended', onEnded)
+      audio.removeEventListener('pause', onPause)
       audio.pause()
       URL.revokeObjectURL(url)
       audioRef.current = null
@@ -75,7 +86,7 @@ export function useSegmentPlayer(file: File | null) {
   const track = () => {
     const audio = audioRef.current
     if (!audio) return
-    setPosition(audio.currentTime)
+    positionRef.current = audio.currentTime
     frameRef.current = requestAnimationFrame(track)
   }
 
@@ -85,7 +96,7 @@ export function useSegmentPlayer(file: File | null) {
     stopTracking()
     audioRef.current?.pause()
     setPlaying(null)
-    setPosition(null)
+    positionRef.current = null
   }, [])
 
   /**
@@ -96,9 +107,12 @@ export function useSegmentPlayer(file: File | null) {
    * element so the next play starts from where they looked.
    */
   const seek = useCallback((seconds: number) => {
+    // No audio element means the file has not decoded yet. Painting a playhead
+    // then would promise a position the next playback will not honour.
     const audio = audioRef.current
-    if (audio) audio.currentTime = seconds
-    setPosition(seconds)
+    if (!audio) return
+    audio.currentTime = seconds
+    positionRef.current = seconds
   }, [])
 
   const play = useCallback(
@@ -145,5 +159,5 @@ export function useSegmentPlayer(file: File | null) {
     stopTracking()
   }, [])
 
-  return { play, stop, seek, playing, position }
+  return { play, stop, seek, playing, positionRef }
 }

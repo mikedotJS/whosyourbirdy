@@ -11,8 +11,13 @@ interface Props {
   /** End of the analysed region, in seconds. Drives the analysis front. */
   analysedUntil: number
   duration: number
-  /** Current playback position in seconds, or null when nothing is playing. */
-  playhead: number | null
+  /**
+   * Live playback/scrub position, read every frame. A ref rather than a prop
+   * value so playback does not re-render the tree 60 times a second.
+   */
+  positionRef: React.RefObject<number | null>
+  /** True only while sound is actually playing — drives the animation loop. */
+  isPlaying: boolean
   onScrub: (seconds: number) => void
 }
 
@@ -48,18 +53,23 @@ const COLORS = {
   light: {
     focus: '#2a78d6',
     playing: '#eb6834',
-    band: 'rgba(11, 11, 11, 0.30)',
+    // Solid, not translucent: this colour is drawn under a globalAlpha, and the
+    // two alphas multiplied down to 0.16 — a 1.6:1 contrast for the default
+    // state of every detection, where WCAG 1.4.11 wants 3:1 for a graphical
+    // object. Opacity now lives in exactly one place.
+    band: '#0b0b0b',
     ink: '#0b0b0b',
-    muted: '#898781',
+    // #898781 measured 3.59:1 on white; these are 10px labels.
+    muted: '#52514e',
     grid: 'rgba(252, 252, 251, 0.22)',
     unanalysed: 'rgba(255, 255, 255, 0.55)',
   },
   dark: {
     focus: '#3987e5',
     playing: '#d95926',
-    band: 'rgba(250, 250, 250, 0.28)',
+    band: '#fafafa',
     ink: '#fafafa',
-    muted: '#898781',
+    muted: '#a3a29c',
     grid: 'rgba(250, 250, 250, 0.16)',
     unanalysed: 'rgba(10, 10, 10, 0.6)',
   },
@@ -151,7 +161,8 @@ export function Spectrogram({
   focused,
   analysedUntil,
   duration,
-  playhead,
+  positionRef,
+  isPlaying,
   onScrub,
 }: Props) {
   const theme = useTheme()
@@ -236,6 +247,7 @@ export function Spectrogram({
 
     // Focus cross-fades rather than snapping, so the link between the list and
     // the picture is a state change you can follow.
+    const playhead = positionRef.current
     const focusTarget = focused ? 1 : 0
     if (reduced) focusRef.current = focusTarget
     else focusRef.current += (focusTarget - focusRef.current) * 0.25
@@ -274,8 +286,17 @@ export function Spectrogram({
     // ---- the region not yet analysed --------------------------------------
     // A veil rather than emptiness: the recording is all there from the start,
     // and what advances is knowledge about it, not the picture.
-    if (front < duration - 0.01 && bitmap) {
-      const frontX = timeToX(front)
+    // Never let the eased front fall behind a detection that has already
+    // arrived: the veil says "not analysed yet", and a band inside it would be
+    // a picture contradicting itself.
+    let lastKnown = front
+    for (const detection of detections) {
+      if (detection.end > lastKnown) lastKnown = Math.min(detection.end, analysedUntil)
+    }
+    const veilFrom = Math.max(front, lastKnown)
+
+    if (veilFrom < duration - 0.01 && bitmap) {
+      const frontX = timeToX(veilFrom)
       ctx.fillStyle = palette.unanalysed
       ctx.fillRect(frontX, plot.y, plot.x + plot.width - frontX, plot.height)
       ctx.strokeStyle = palette.focus
@@ -299,8 +320,8 @@ export function Spectrogram({
     for (const detection of ordered) {
       const key = detection.windowIndex * 10000 + detection.species.index
       const isFocused = focused !== null && detection.species.index === focused.index
-      const isPlaying =
-        playhead !== null && playhead >= detection.start && playhead < detection.end
+      const underPlayhead =
+        isPlaying && playhead !== null && playhead >= detection.start && playhead < detection.end
 
       // Each band arrives on its own clock, so a burst of detections staggers in
       // rather than the strip flashing as one block.
@@ -316,12 +337,14 @@ export function Spectrogram({
       // 2px surface gap between adjacent fills, per the mark spec.
       // The focused colour fades in over the recessive one rather than swapping.
       const promote = isFocused ? focusRef.current : 0
-      ctx.fillStyle = isPlaying ? palette.playing : promote > 0.5 ? palette.focus : palette.band
+      ctx.fillStyle = underPlayhead ? palette.playing : promote > 0.5 ? palette.focus : palette.band
       // Confidence is magnitude: it rides on opacity, not on hue.
+      // Floor of 0.45 so even the least confident recessive band clears 3:1
+      // against the surface (measured 3.42:1 light, 4.43:1 dark).
       const base =
-        isPlaying || promote > 0.5
-          ? 0.6 + 0.4 * detection.score
-          : 0.45 + 0.3 * detection.score
+        underPlayhead || promote > 0.5
+          ? 0.65 + 0.35 * detection.score
+          : 0.45 + 0.25 * detection.score
       ctx.globalAlpha = base * enter
 
       // Bands grow up from the baseline as they arrive: 4px rounded ends on the
@@ -374,8 +397,8 @@ export function Spectrogram({
     }
     ctx.textAlign = 'center'
   }, [
-    bitmap, plot, size, palette, detections, focused, playhead, hoverTime,
-    analysedUntil, duration, spectrogram, timeToX, reduced,
+    bitmap, plot, size, palette, detections, focused, isPlaying, hoverTime,
+    analysedUntil, duration, spectrogram, timeToX, reduced, positionRef,
   ])
 
   drawRef.current = draw
@@ -392,7 +415,10 @@ export function Spectrogram({
         const born = seenRef.current.get(d.windowIndex * 10000 + d.species.index)
         return born === undefined || now - born > BAND_IN_MS
       })
-      return frontSettled && focusSettled && bandsSettled && playhead === null
+      // Keyed on real playback: a scrub leaves a playhead parked on screen, and
+      // treating that as "still animating" kept a 60 fps redraw of a static
+      // canvas running forever (measured at 25-29 ms of main thread per second).
+      return frontSettled && focusSettled && bandsSettled && !isPlaying
     }
 
     const tick = () => {
@@ -415,7 +441,7 @@ export function Spectrogram({
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current)
       rafRef.current = null
     }
-  }, [draw, analysedUntil, focused, detections, playhead])
+  }, [draw, analysedUntil, focused, detections, isPlaying])
 
   const handlePointer = (event: React.PointerEvent) => {
     const rect = event.currentTarget.getBoundingClientRect()
@@ -423,25 +449,64 @@ export function Spectrogram({
     return Math.max(0, Math.min(duration, time))
   }
 
+  const [dragging, setDragging] = useState(false)
+
+  const nudge = (event: React.KeyboardEvent) => {
+    const current = positionRef.current ?? 0
+    const step = event.shiftKey ? 10 : 3 // one analysis window by default
+    const moves: Record<string, number> = {
+      ArrowLeft: -step,
+      ArrowRight: step,
+      Home: -duration,
+      End: duration,
+      PageDown: -30,
+      PageUp: 30,
+    }
+    const delta = moves[event.key]
+    if (delta === undefined) return
+    event.preventDefault()
+    onScrub(Math.max(0, Math.min(duration, current + delta)))
+  }
+
   return (
     <figure className="flex flex-col gap-2">
       <div
         ref={wrapRef}
-        className="relative h-72 w-full cursor-crosshair touch-none select-none"
-        onPointerMove={(e) => setHoverTime(handlePointer(e))}
+        className="relative h-72 w-full cursor-crosshair touch-none select-none rounded-sm outline-offset-2 focus-visible:outline-2 focus-visible:outline-[#2a78d6] dark:focus-visible:outline-[#3987e5]"
+        onPointerMove={(e) => {
+          const time = handlePointer(e)
+          setHoverTime(time)
+          // Dragging has to scrub. Capturing the pointer and then only acting on
+          // pointerdown meant a drag looked live and did nothing.
+          if (dragging) onScrub(time)
+        }}
         onPointerLeave={() => setHoverTime(null)}
         onPointerDown={(e) => {
           e.currentTarget.setPointerCapture(e.pointerId)
+          setDragging(true)
           onScrub(handlePointer(e))
         }}
-        onPointerUp={(e) => e.currentTarget.releasePointerCapture(e.pointerId)}
-        role="img"
+        onPointerUp={(e) => {
+          setDragging(false)
+          e.currentTarget.releasePointerCapture(e.pointerId)
+        }}
+        onPointerCancel={() => setDragging(false)}
+        onKeyDown={nudge}
+        // It reads as a picture but it behaves as a position control, so it is
+        // typed as one: role="img" hid the fact that the region is actionable,
+        // and without a tab stop the timeline was mouse-only.
+        tabIndex={0}
+        role="slider"
         aria-label={
           spectrogram
-            ? `Spectrogramme de ${clock(duration)}, de 0 à ${(spectrogram.maxHz / 1000).toFixed(0)} kHz, ` +
-              `avec ${detections.length} détections`
+            ? `Position dans le spectrogramme — ${clock(duration)}, 0 à ` +
+              `${(spectrogram.maxHz / 1000).toFixed(0)} kHz, ${detections.length} détections`
             : 'Spectrogramme en cours de calcul'
         }
+        aria-valuemin={0}
+        aria-valuemax={Math.round(duration)}
+        aria-valuenow={Math.round(positionRef.current ?? 0)}
+        aria-valuetext={clock(positionRef.current ?? 0)}
       >
         <canvas
           ref={canvasRef}

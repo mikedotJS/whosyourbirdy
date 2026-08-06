@@ -64,6 +64,22 @@ async function countDetections(page) {
   return match ? Number(match[1]) : -1
 }
 
+/** Count pixels close to the focus blue, in either theme's step. */
+async function countFocusColour(page) {
+  return page.evaluate(() => {
+    const canvas = document.querySelector('canvas')
+    const ctx = canvas.getContext('2d')
+    const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height)
+    let n = 0
+    for (let i = 0; i < data.length; i += 4) {
+      const [r, g, b] = [data[i], data[i + 1], data[i + 2]]
+      // Blue-dominant and not grey: the focus colour, at any alpha.
+      if (b > 90 && b - r > 40 && b - g > 20) n++
+    }
+    return n
+  })
+}
+
 function toSeconds(clock) {
   const [m, s] = clock.split(':').map(Number)
   return m * 60 + s
@@ -149,7 +165,30 @@ async function main() {
     await page.waitForTimeout(400)
     await page.screenshot({ path: join(shotsDir, '3-results.png'), fullPage: true })
 
-    check('the spectrogram is rendered', (await page.locator('canvas').count()) === 1)
+    // `canvas.count() === 1` passed with a blank canvas, a wrong FFT or an
+    // inverted axis. Read the pixels instead.
+    const canvasStats = await page.evaluate(() => {
+      const canvas = document.querySelector('canvas')
+      const ctx = canvas.getContext('2d')
+      const { data, width, height } = ctx.getImageData(0, 0, canvas.width, canvas.height)
+      let min = 255, max = 0, sum = 0, n = 0
+      // Sample the plot area only, skipping the axis gutter and the band lane.
+      for (let y = 10; y < height * 0.8; y += 4) {
+        for (let x = Math.floor(width * 0.1); x < width; x += 4) {
+          const v = data[(y * width + x) * 4]
+          if (v < min) min = v
+          if (v > max) max = v
+          sum += v
+          n++
+        }
+      }
+      return { min, max, mean: sum / n }
+    })
+    check(
+      'the spectrogram has real content, not a blank canvas',
+      canvasStats.max - canvasStats.min > 60,
+      `luminance ${canvasStats.min}–${canvasStats.max}, mean ${canvasStats.mean.toFixed(0)}`,
+    )
 
     // Golden values from the parity ground truth. `rows > 0` would pass with the
     // species, scores and counts all shuffled; these would not.
@@ -194,6 +233,50 @@ async function main() {
       return !match || toSeconds(match[1]) % 3 !== 0
     })
     check('every occurrence sits on the 3 s analysis grid', offGrid.length === 0, offGrid.join(', '))
+
+    // Focusing must actually change the picture, not just the list.
+    const blueWhenFocused = await countFocusColour(page)
+    await page.locator(`${ROWS} button`).first().click() // unpin
+    await page.waitForTimeout(400)
+    const blueWhenNot = await countFocusColour(page)
+    check(
+      'focusing a species repaints its bands in the picture',
+      blueWhenFocused > blueWhenNot,
+      `${blueWhenNot} → ${blueWhenFocused} focus-coloured pixels`,
+    )
+
+    // The timeline must scrub by dragging, not only by clicking.
+    const box = await page.locator('canvas').boundingBox()
+    await page.mouse.move(box.x + box.width * 0.2, box.y + box.height * 0.4)
+    await page.mouse.down()
+    for (let i = 1; i <= 8; i++) {
+      await page.mouse.move(box.x + box.width * (0.2 + 0.06 * i), box.y + box.height * 0.4)
+    }
+    await page.mouse.up()
+    await page.waitForTimeout(200)
+    const scrubbed = Number(await page.locator('[role=slider]').getAttribute('aria-valuenow'))
+    check('dragging the timeline scrubs', scrubbed > 60, `position ${scrubbed}s after drag to ~68%`)
+
+    // A parked playhead must not keep the canvas animating forever.
+    const frames = await page.evaluate(
+      () =>
+        new Promise((resolve) => {
+          let n = 0
+          const start = performance.now()
+          const tick = () => {
+            n++
+            if (performance.now() - start < 1000) requestAnimationFrame(tick)
+            else resolve(n)
+          }
+          requestAnimationFrame(tick)
+        }),
+    )
+    const painting = await page.evaluate(() => window.__specDraws ?? null)
+    check(
+      'the animation loop stops once nothing is moving',
+      painting === null || painting < 5,
+      painting === null ? `rAF available (${frames}/s), no draw counter exposed` : `${painting} draws/s`,
+    )
 
     // The slider must filter in memory, not re-run the model.
     const t0 = Date.now()

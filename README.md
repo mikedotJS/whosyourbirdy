@@ -255,13 +255,21 @@ couleur focalisée à la fois**. Concrètement :
   **achromatique**. C'est aussi la convention en bioacoustique (Raven, Audacity), mais surtout ça
   libère tout le canal chromatique pour la superposition.
 - **Bandes de détection** : trois états — discrète (présente), focalisée (bleu), en lecture (orange).
-  La confiance passe par l'**opacité**, pas par la teinte.
+  La confiance passe par l'**opacité**, pas par la teinte, avec un plancher à 0,45 pour que même la
+  bande la moins confiante tienne le 3:1 exigé par WCAG 1.4.11 sur un objet graphique (mesuré 3,42:1
+  en clair, 4,43:1 en sombre).
 - Les deux teintes sont validées contre les surfaces réelles de l'application : ΔE 24,7 en clair /
   26,8 en sombre, ≥ 3:1 sur leur fond dans les deux modes.
 
 Le spectrogramme d'affichage est une STFT ordinaire (trames de 1024, 0–15 kHz, échelle dB avec
 normalisation par percentiles). **Il n'a rien à voir avec les mel-spectrogrammes du modèle**, qui
-restent dans le graphe et auxquels on ne touche pas. Il est calculé dans le worker — qui possède déjà
+restent dans le graphe et auxquels on ne touche pas.
+
+Plusieurs trames sont transformées par colonne puis **max-poolées**. Une trame par colonne — la
+version évidente — *échantillonnait* l'enregistrement au lieu de le résumer : sur deux minutes, le
+pas atteint 75 ms pour une trame de 21 ms, donc **72 % de l'audio n'apparaissait nulle part** et un
+cri court tombant dans un trou était invisible. On pouvait cliquer une bande de détection et trouver
+l'image vide à l'endroit de l'oiseau. Il est calculé dans le worker — qui possède déjà
 le PCM après le transfert — et renvoyé en grille 8 bits : ~450 Ko au lieu des 23 Mo des échantillons.
 
 ### Le mouvement, et ce qu'il sert
@@ -277,8 +285,14 @@ La mise en page a été arrêtée avant d'animer quoi que ce soit. Rien n'est d�
 - **Le focus se fait en fondu** entre l'état discret et l'état focalisé : une transition d'état, pas
   un saut.
 - La boucle d'animation **s'arrête dès que tout est arrivé** — un rAF permanent sur une image fixe
-  est une fuite de batterie, pas une animation.
-- `prefers-reduced-motion` réduit chaque animation à son état final.
+  est une fuite de batterie, pas une animation. Elle est conditionnée à la **lecture réelle**, pas à
+  la présence d'une tête de lecture : la revue a montré qu'un simple scrub laissait tourner 60 fps
+  indéfiniment (25–29 ms de thread principal par seconde), ce qui contredisait exactement cette
+  phrase du README.
+- La position de lecture vit dans une **ref**, pas dans un état React : en état, elle re-rendait
+  l'arbre entier 60 fois par seconde et faisait réallouer le canvas deux fois par frame.
+- `prefers-reduced-motion` réduit chaque animation à son état final (vérifié : décalage du front
+  0,1 px au lieu de 10–28 px, zéro animation de ligne).
 
 ### Deux décisions héritées de P1
 
