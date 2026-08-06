@@ -17,6 +17,11 @@ téléchargé une fois, mis en cache, et l'inférence tourne en WebAssembly dans
 **P0 livré** : le pipeline d'analyse et la preuve de parité numérique avec l'implémentation
 officielle. Pas encore d'interface — elle arrive en P1.
 
+> **Une limite connue dépasse le contrat de 1 × 10⁻³.** Sur la **dernière fenêtre** d'un fichier dont
+> la durée n'est pas un multiple de 3 s (donc zero-paddée), l'écart de score atteint 1,7 × 10⁻².
+> Toutes les autres fenêtres restent à ≤ 9,4 × 10⁻⁵. Aucune détection ne change, sur 35 fenêtres
+> paddées testées. Cause identifiée et bornée : voir [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md).
+
 ## Démarrage
 
 ```bash
@@ -155,6 +160,18 @@ remplace ~1 GFLOP de DFT dense par une convolution à 96 canaux.
 `scripts/convert_to_onnx.py` **assert** l'équivalence à chaque étape et refuse d'écrire un modèle qui
 ne correspond pas. Voir `scripts/birdnet_mel.py` pour la dérivation complète.
 
+#### Ce que ce repli coûte
+
+L'algèbre est exacte, la stabilité numérique ne l'est pas. Une FFT accumule en `log₂(2048) = 11`
+étages (erreur en `O(√log N)`) ; un produit scalaire direct accumule 2048 termes (erreur en `O(√N)`).
+Sur de l'audio réel c'est invisible — 6,8 × 10⁻⁵ d'écart de score. Sur une trame quasi silencieuse,
+où la vraie valeur mel vaut ~0 et où le résultat *est* le résidu d'arrondi, le repli est ~4,6× moins
+bien conditionné que la FFT qu'il remplace.
+
+C'est l'origine exacte de la limite documentée dans
+[`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) sur la fenêtre finale zero-paddée. Le compromis est
+assumé et mesuré, pas ignoré : sans ce repli il n'y a pas d'inférence navigateur du tout.
+
 ## Le test de parité
 
 ```bash
@@ -162,23 +179,31 @@ pnpm parity            # les trois niveaux
 pnpm parity --only=A   # un seul
 ```
 
-Quatre niveaux, ordonnés pour qu'un échec désigne **une** cause :
+Cinq niveaux, ordonnés pour qu'un échec désigne **une** cause :
 
 | Niveau | Ce qui est comparé | Verdict |
 |---|---|---|
 | **A** | PCM identique → TFLite officiel (Python) **vs** notre ONNX sous ORT WASM. Isole le modèle. | doit passer |
-| **A′** | Idem, sur un fichier tronqué à 118,5 s pour que la **dernière fenêtre soit zero-paddée** à moitié. | doit passer |
+| **A′** | 35 fenêtres zero-paddées : 5 positions dans le fichier × 7 longueurs de queue. | borne documentée |
 | **B** | Le même fichier → référence Python **vs** vrai Chromium exécutant `lib/birdnet` (Web Audio, worker, sigmoïde). Isole la chaîne audio. | doit passer |
 | **C** | Fichier en 44,1 kHz : les deux côtés doivent rééchantillonner, avec des rééchantillonneurs différents. | mesuré, non imposé |
 | **D** | Entrées dégénérées (silence total, continu, saturation, tons purs) envoyées directement aux deux implémentations, sans chaîne audio. | doit passer |
 
 Le niveau A′ existe parce que `soundscape.wav` fait exactement 40 fenêtres pleines : sans lui, le
-chemin de zero-padding — donc toute erreur d'un cran dans le fenêtrage — ne serait jamais exercé.
+chemin de zero-padding — donc toute erreur d'un cran dans le fenêtrage — ne serait jamais exercé. Il
+balaie **position et longueur de queue**, parce que l'erreur dépend fortement des deux : une seule
+troncature bien choisie donne 2,4 × 10⁻⁴ et une fausse impression de sécurité, là où le balayage
+complet révèle 1,7 × 10⁻².
 
 Le niveau D existe parce que le front-end mel est le plus fragile là où le signal est pauvre : le
 modèle divise par `max(x) + 1e-6` puis élève à une puissance fractionnaire. Le cas « fenêtre
 entièrement nulle » n'est pas théorique — tout fichier dont la durée n'est pas un multiple de 3 s en
 produit une partielle, et un fichier se terminant par du silence en produit une complète.
+
+Le niveau D existe aussi parce que le harnais doit exercer les **valeurs par défaut réelles** :
+l'analyseur y tourne avec `excludeNonEvents: true`, donc le worker emprunte sa branche
+`allowedClasses` — celle que prend tout appel réel. Une version antérieure passait `false` et
+laissait cette branche entièrement non testée.
 
 ### Ce sur quoi le harnais statue, et ce qu'il se contente de rapporter
 
@@ -248,29 +273,30 @@ Citation :
 
 Sur `soundscape.wav` (40 fenêtres × 6 522 classes = 260 880 comparaisons par niveau) :
 
-| Niveau | `max|Δscore|` | `max|Δlogit|` | Détections divergentes à 0,25 |
+| Niveau | `max|Δscore|` | Détections divergentes à 0,25 | Verdict |
 |---|---|---|---|
-| A — modèle seul | 6,8 × 10⁻⁵ | 9,7 × 10⁻⁴ | **0** |
-| A′ — fenêtre zero-paddée | 2,4 × 10⁻⁴ | 3,8 × 10⁻² | **0** |
-| B — chaîne complète (Chromium) | 9,4 × 10⁻⁵ | 1,4 × 10⁻³ | **0** |
-| C — rééchantillonné 44,1 kHz | 1,4 × 10⁻³ | 2,4 × 10⁻² | **0** |
-| D — entrées dégénérées | 9,0 × 10⁻⁴ | 2,3 × 10⁻¹ | **0** |
+| A — modèle seul | 6,8 × 10⁻⁵ | **0** | ✅ |
+| A′ — 35 fenêtres zero-paddées | **1,7 × 10⁻²** | **0** | ⚠️ hors contrat, [documenté](docs/LIMITATIONS.md) |
+| B — chaîne complète (Chromium) | 9,4 × 10⁻⁵ | **0** | ✅ |
+| C — rééchantillonné 44,1 kHz | 1,4 × 10⁻³ | **0** | mesuré, non imposé |
+| D — entrées dégénérées | 9,0 × 10⁻⁴ | **0** | ✅ |
 
-Un ordre de grandeur sous le seuil demandé de 1 × 10⁻³ sur les niveaux A et B. **Zéro détection
-divergente sur tous les niveaux, y compris ceux qui ne sont pas imposés.**
+Sur de l'audio réel, on est un ordre de grandeur sous le seuil demandé de 1 × 10⁻³ (niveaux A et B).
+**Zéro détection divergente à tous les niveaux, y compris ceux qui ne sont pas imposés** — c'est le
+résultat qui compte le plus, et il tient même là où l'écart de score sort du contrat.
+
+Le niveau A′ est la limite connue : 14 des 35 fenêtres paddées dépassent 1 × 10⁻³, jusqu'à
+1,7 × 10⁻². Une seule fenêtre par fichier est concernée, et aucune détection ne bouge. Cause et
+bornes dans [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md).
 
 Détail du niveau D :
 
 | Entrée | `max|Δscore|` |
 |---|---|
 | silence total / continu à 0,5 | 5,1 × 10⁻⁴ |
-| **moitié audio / moitié silence** | **9,0 × 10⁻⁴** ← marge la plus serrée |
+| **moitié audio / moitié silence** | **9,0 × 10⁻⁴** |
 | ton pur 4 kHz | 2,6 × 10⁻⁴ |
 | créneau pleine échelle, bruit blanc, saturation, audio réel | ≤ 1,5 × 10⁻⁵ |
-
-Le cas le plus tendu reste sous le seuil, mais de peu : une fenêtre à moitié silencieuse est
-l'entrée la plus défavorable pour ce modèle, pour la raison expliquée ci-dessous. Sur de l'audio
-réel, on est trois ordres de grandeur plus bas.
 
 ### Ce que le niveau C a mis au jour
 

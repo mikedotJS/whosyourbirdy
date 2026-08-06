@@ -89,11 +89,14 @@ window.runParity = async (audioUrl, expectedWindows, classes) => {
   // ---- pass 2: the shipping path, cross-checked against pass 1 -----------
   const labels = await loadLabels('en')
   const analyzer = new BirdNetAnalyzer()
+  // Deliberately the shipping defaults: excludeNonEvents stays true, so the
+  // worker takes its allowedClasses branch — the one every real call uses. An
+  // earlier version passed false here and left that branch untested, which meant
+  // an indexing bug in it could have passed the whole suite.
   const result = await analyzer.analyze(bytes.slice(0), {
     overlap: 0,
     minConfidence: DEFAULT_MIN_CONFIDENCE,
     locale: 'en',
-    excludeNonEvents: false,
   })
   analyzer.dispose()
 
@@ -106,9 +109,10 @@ window.runParity = async (audioUrl, expectedWindows, classes) => {
     const drift = Math.abs(expected - detection.score)
     if (drift > analyzerDrift) analyzerDrift = drift
     if (drift > 1e-6) analyzerMismatches++
-    if (labels[detection.species.index].scientificName !== detection.species.scientificName) {
-      analyzerMismatches++
-    }
+    // Comparing detection.species against labels[detection.species.index] would
+    // be a tautology — they are the same object. The drift check above is the
+    // real label test: it looks the score up in pass 1's logits *by class index*,
+    // so any shift between class index and reported species shows up as drift.
   }
 
   // The analyzer must also not *miss* anything the raw logits put above the bar.
@@ -119,8 +123,12 @@ window.runParity = async (audioUrl, expectedWindows, classes) => {
       if (scores[c] >= DEFAULT_MIN_CONFIDENCE && !isNonEvent(labels[c])) expectedCount++
     }
   }
-  const reported = result.detections.filter((d) => !isNonEvent(d.species)).length
+  // The analyzer ran with excludeNonEvents:true, so it should report exactly the
+  // above-threshold bird classes and nothing else.
+  const reported = result.detections.length
   if (reported !== expectedCount) analyzerMismatches += Math.abs(expectedCount - reported)
+  const leakedNonEvents = result.detections.filter((d) => isNonEvent(d.species)).length
+  analyzerMismatches += leakedNonEvents
 
   return {
     logits: Array.from(logits),

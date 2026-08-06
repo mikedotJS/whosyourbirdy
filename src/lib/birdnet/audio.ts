@@ -15,11 +15,31 @@ import { SAMPLE_RATE } from './constants'
  *    Normalising beforehand changes the window statistics the model was trained
  *    on and measurably degrades scores.
  *
- * Resampling is delegated to `OfflineAudioContext`, which is the browser's own
- * (high quality, implementation-defined) resampler. We do not hand-roll one:
- * matching BirdNET's `resampy` output sample-for-sample is not achievable in the
- * browser, and `scripts/parity.mjs` level C measures the residual difference
- * rather than papering over it.
+ * Resampling is delegated to the browser. We do not hand-roll one: matching
+ * BirdNET's `resampy` output sample-for-sample is not achievable here, and
+ * `scripts/parity.mjs` level C measures the residual difference rather than
+ * papering over it.
+ *
+ * Which resampler actually runs
+ * -----------------------------
+ * In Chromium and Firefox, `decodeAudioData` resamples to the decoding context's
+ * rate, so the work is done by the *decoder* and `resampleTo48k` below never
+ * runs. That decoder path is the one level C measures, and it is good: the
+ * residual score difference against `resampy` is ~1.4e-3 with no change in which
+ * species get reported.
+ *
+ * `resampleTo48k` is the fallback for engines that hand back the file's own rate
+ * (Safari historically did). It uses `OfflineAudioContext` playback-rate
+ * conversion, which is *not* the same quality: measured in Chromium it applies
+ * no anti-alias filter when downsampling — a 30 kHz tone in a 96 kHz file folds
+ * down to 18 kHz at unity gain, which matters for bioacoustics recordings
+ * carrying ultrasonic content — and its non-integer-ratio interpolation leaves
+ * spurious tones around -28 dB at 15 kHz where `resampy` stays below -80 dB.
+ *
+ * So: files at 48 kHz are untouched and exact, non-48 kHz files in
+ * Chromium/Firefox go through the good decoder path, and only the Safari
+ * fallback is degraded. Pre-converting to 48 kHz avoids all of it. This is a
+ * known limitation, not a solved problem.
  */
 
 export interface DecodedAudio {
@@ -56,6 +76,14 @@ function assertAudioSupport(): void {
  */
 async function decodeToBuffer(data: ArrayBuffer): Promise<AudioBuffer> {
   assertAudioSupport()
+
+  // decodeAudioData DETACHES the buffer it is given. Decoding the caller's
+  // buffer directly would make `analyze(sameArrayBuffer)` work exactly once and
+  // then fail with "Cannot decode detached ArrayBuffer" — which the catch below
+  // would rewrite into a misleading "unsupported format" message. A UI that
+  // re-analyses on a threshold change would hit this immediately, so we decode a
+  // copy and leave the caller's buffer intact.
+  const owned = data.slice(0)
   // The context rate is deliberately 48 kHz, not incidental: Chromium and Firefox
   // resample during `decodeAudioData` to the decoding context's rate, so asking
   // for 48 kHz here gets the resampling done by the decoder in one pass. The
@@ -66,11 +94,14 @@ async function decodeToBuffer(data: ArrayBuffer): Promise<AudioBuffer> {
   // `resampleTo48k` below is a real fallback and not dead code.
   const ctx = new OfflineAudioContext(1, 1, SAMPLE_RATE)
   try {
-    return await ctx.decodeAudioData(data)
+    return await ctx.decodeAudioData(owned)
   } catch (cause) {
+    // Only claim a format problem when it plausibly is one; anything else is
+    // reported as itself rather than disguised.
+    const detail = cause instanceof Error ? `: ${cause.message}` : ''
     throw new Error(
       'Could not decode this audio file. Supported formats depend on the browser ' +
-        '(wav and mp3 always; flac, m4a and ogg usually).',
+        `(wav and mp3 always; flac, m4a and ogg usually)${detail}`,
       { cause },
     )
   }

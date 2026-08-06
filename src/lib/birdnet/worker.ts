@@ -52,7 +52,7 @@ function selectDetections(
   minConfidence: number,
   allowedClasses: Int32Array | null,
   topK: number,
-): { classes: Int32Array; scores: Float32Array } {
+): { classes: Int32Array; scores: Float32Array; truncated: boolean } {
   const hits: number[] = []
 
   if (allowedClasses) {
@@ -75,7 +75,7 @@ function selectDetections(
     classes[i] = kept[i]
     values[i] = scores[kept[i]]
   }
-  return { classes, scores: values }
+  return { classes, scores: values, truncated: hits.length > topK }
 }
 
 async function analyze(request: Extract<WorkerRequest, { type: 'analyze' }>): Promise<void> {
@@ -113,6 +113,7 @@ async function analyze(request: Extract<WorkerRequest, { type: 'analyze' }>): Pr
         classes: picked.classes,
         scores: picked.scores,
         inferenceMs,
+        truncated: picked.truncated,
       },
       [picked.classes.buffer, picked.scores.buffer],
     )

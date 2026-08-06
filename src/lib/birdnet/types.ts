@@ -54,12 +54,20 @@ export interface WindowResult {
   start: number
   end: number
   detections: Detection[]
+  /** True when the per-window cap discarded detections above the threshold. */
+  truncated: boolean
   /** Wall-clock inference time for this window, in milliseconds. */
   inferenceMs: number
 }
 
 export interface AnalysisResult {
   detections: Detection[]
+  /**
+   * Windows where the per-window cap discarded detections that cleared the
+   * threshold. Non-zero means the list is incomplete — surface it rather than
+   * quietly showing a short list.
+   */
+  truncatedWindows: number
   windowCount: number
   duration: number
   /** Median per-window inference time, in milliseconds. */
@@ -98,7 +106,15 @@ export type WorkerResponse =
       classes: Int32Array
       scores: Float32Array
       inferenceMs: number
+      /** True when more classes cleared the threshold than `topKPerWindow` allowed. */
+      truncated: boolean
     }
-  | { type: 'done'; requestId: number; windowCount: number; totalMs: number; timings: Float32Array }
+  | {
+      type: 'done'
+      requestId: number
+      windowCount: number
+      totalMs: number
+      timings: Float32Array
+    }
   | { type: 'cancelled'; requestId: number }
   | { type: 'error'; requestId?: number; message: string }

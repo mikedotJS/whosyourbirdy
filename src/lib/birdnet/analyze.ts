@@ -40,6 +40,8 @@ export class BirdNetAnalyzer {
   private worker: Worker | null = null
   private ready: Promise<void> | null = null
   private nextRequestId = 1
+  /** In-flight analyses, so `dispose()` can settle them instead of stranding them. */
+  private readonly pending = new Map<number, (reason: unknown) => void>()
 
   constructor(
     private readonly options: { modelBaseUrl?: string; wasmPath?: string } = {},
@@ -132,8 +134,12 @@ export class BirdNetAnalyzer {
     return new Promise<AnalysisResult>((resolve, reject) => {
       const detections: Detection[] = []
       let completed = 0
+      let truncatedWindows = 0
+
+      this.pending.set(requestId, reject)
 
       const cleanup = () => {
+        this.pending.delete(requestId)
         worker.removeEventListener('message', onMessage)
         options.signal?.removeEventListener('abort', onAbort)
       }
@@ -162,12 +168,14 @@ export class BirdNetAnalyzer {
             }
             detections.push(...windowDetections)
             completed++
+            if (message.truncated) truncatedWindows++
 
             callbacks.onWindow?.({
               windowIndex: message.windowIndex,
               start: message.start,
               end: message.end,
               detections: windowDetections,
+              truncated: message.truncated,
               inferenceMs: message.inferenceMs,
             })
             callbacks.onProgress?.({
@@ -184,6 +192,7 @@ export class BirdNetAnalyzer {
             detections.sort((a, b) => b.score - a.score)
             resolve({
               detections,
+              truncatedWindows,
               windowCount: message.windowCount,
               duration: audio.duration,
               medianInferenceMs: median(message.timings),
@@ -221,8 +230,19 @@ export class BirdNetAnalyzer {
     })
   }
 
-  /** Release the worker and the 52 MB session inside it. */
+  /**
+   * Release the worker and the 52 MB session inside it.
+   *
+   * Any analysis still in flight is rejected first. Terminating the worker means
+   * its `done`/`cancelled`/`error` message can never arrive, so without this the
+   * pending promise would simply never settle — a spinner that spins forever
+   * after the user navigates away or cancels.
+   */
   dispose(): void {
+    for (const reject of this.pending.values()) {
+      reject(new DOMException('Analyzer disposed', 'AbortError'))
+    }
+    this.pending.clear()
     this.worker?.terminate()
     this.worker = null
     this.ready = null

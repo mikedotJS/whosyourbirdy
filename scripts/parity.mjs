@@ -14,10 +14,14 @@
  *      windowing, worker, sigmoid. Any difference that is not in A is the audio
  *      chain.
  *
- *   C. Resampling. The file is fed at 44.1 kHz so both sides must resample. The
- *      browser uses its own resampler and BirdNET uses resampy; they cannot
- *      agree bit-for-bit. This level *measures* that divergence and reports it.
- *      It is not corrected, and no fudge factor is applied anywhere.
+ *   C. Resampling. The file is fed at 44.1 kHz so both sides must resample.
+ *      Note what this actually exercises: in Chromium, `decodeAudioData`
+ *      resamples to the decoding context's rate, so this measures the browser's
+ *      *decoder* resampler against resampy -- not `resampleTo48k`, which is the
+ *      Safari fallback and is never reached here. They cannot agree
+ *      bit-for-bit. This level measures the divergence and reports it; it is not
+ *      corrected, and no fudge factor is applied anywhere. A detection
+ *      disagreement, however, still fails the run.
  *
  * Levels A and B must pass. Level C is reported, and only fails if the drift is
  * large enough to change which species get reported.
@@ -67,6 +71,12 @@ const SCORE_TOL = 1e-3
 // probabilities against logits (a real bug hit during development) produced
 // max|Δscore| = 0.5 and thousands of detection disagreements. Both gates are
 // properties a user can actually observe.
+
+// How much real audio the final (zero-padded) window keeps, in seconds. Short
+// tails are the hard case: the window is mostly silence, the mel bins collapse
+// toward zero, and the model's fractional power amplifies whatever float noise
+// remains. 1.5 s alone passes comfortably and would hide the rest.
+const TAIL_SWEEP_SECONDS = [0.5, 1.0, 1.5, 2.5]
 
 const args = process.argv.slice(2)
 const only = (args.find((a) => a.startsWith('--only='))?.slice(7) ?? 'A,B,C,D').split(',')
@@ -375,15 +385,22 @@ async function main() {
     results.push(await levelA(reference))
 
     // soundscape.wav is exactly 40 whole windows, so the plain run never
-    // exercises a zero-padded tail. Truncating to 118.5 s forces the final
-    // window to be half real audio and half zeros — the case where a framing
-    // off-by-one or a padding mismatch would actually show up.
-    console.log(bold('\n  level A′ — zero-padded final window'))
-    const truncated = runReference(FIXTURE, join(WORK, 'ref-trunc.npz'), { truncateSeconds: 118.5 })
-    console.log(dim(`    last window is ${truncated.meta.paddedTailSamples} samples of padding`))
-    results.push(
-      await levelA(truncated, 'ref-trunc.pcm', "A′ zero-padded tail (ONNX/WASM vs official TFLite)"),
-    )
+    // exercises a zero-padded tail. One truncation is not enough either: the
+    // error depends strongly on how much real audio the last window keeps, and
+    // picking a single length can flatter the result. We sweep short tails,
+    // where the model is worst conditioned, and report the worst case.
+    console.log(bold('\n  level A′ — zero-padded final windows (swept over position and tail length)'))
+    const padded = spawnSync(VENV, ['scripts/parity_padded.py'], { cwd: ROOT, encoding: 'utf8' })
+    process.stdout.write(dim(padded.stdout ?? ''))
+    const ps = JSON.parse((padded.stderr ?? '{}').trim().split('\n').pop() || '{}')
+    results.push({
+      name: "A′ zero-padded tail windows (known limitation, see docs/LIMITATIONS.md)",
+      ok: padded.status === 0,
+      detail:
+        `worst max|Δscore|=${(ps.worst ?? NaN).toExponential(3)} over ${ps.total ?? '?'} padded windows; ` +
+        `${ps.overContract ?? '?'} exceed the 1e-3 contract; ` +
+        `detections differing at 0.25: ${ps.disagreements ?? '?'}`,
+    })
   }
 
   if (only.includes('B') || only.includes('C')) {
@@ -436,7 +453,14 @@ sf.write(sys.argv[2], r, 44100, subtype='PCM_16')`,
     const status = r.informational ? dim('INFO') : r.ok ? green('PASS') : red('FAIL')
     console.log(`  ${status}  ${r.name}`)
     console.log(`        ${r.detail}`)
+    // Level C's score tolerance is informational, but a *detection* disagreement
+    // is not: that would mean a resampled file reports different species, which
+    // is the one thing level C is supposed to rule out.
     if (!r.ok && !r.informational) failed = true
+    if (r.informational && r.disagreements > 0) {
+      console.log(red(`        ^ detection disagreements are never acceptable, even at level C`))
+      failed = true
+    }
   }
 
   const informational = results.filter((r) => r.informational)
