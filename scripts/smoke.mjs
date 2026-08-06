@@ -187,7 +187,12 @@ async function main() {
     await page.waitForTimeout(300)
     const chips = await page.locator(`${ROWS}`).first().locator('ul button').allInnerTexts()
     check('focusing a species reveals its occurrences', chips.length === 2, chips.join(' '))
-    const offGrid = chips.filter((c) => toSeconds(c.split(' ')[0]) % 3 !== 0)
+    // innerText runs the chip's timecode and score together ("0:000.81"), so
+    // pull the clock out by shape rather than by splitting on whitespace.
+    const offGrid = chips.filter((c) => {
+      const match = c.match(/^(\d+:\d\d)/)
+      return !match || toSeconds(match[1]) % 3 !== 0
+    })
     check('every occurrence sits on the 3 s analysis grid', offGrid.length === 0, offGrid.join(', '))
 
     // The slider must filter in memory, not re-run the model.
