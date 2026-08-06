@@ -219,6 +219,9 @@ function serveStatic(port) {
   }
   const server = createServer((req, res) => {
     const url = decodeURIComponent(req.url.split('?')[0])
+    // Answer the browser's automatic favicon probe so it does not show up as a
+    // 404 and mask a real missing asset.
+    if (url === '/favicon.ico') { res.writeHead(204).end(); return }
     for (const root of roots) {
       const path = join(root, url)
       if (!path.startsWith(root)) continue
@@ -261,14 +264,46 @@ async function levelBrowser(label, reference, audioFile, expectFail) {
       { timeout: 600_000 },
     )
 
-    const got = Float32Array.from(result.logits)
+    const classes = reference.meta.classes
+    let got = Float32Array.from(result.logits)
+    let expected = reference.logits
+    let refWindows = reference.meta.windows
+
     process.stdout.write(
-      dim(`    decoded ${result.meta.originalRate} Hz -> 48000 Hz, ` +
+      dim(`    decoded at ${result.meta.decodedRate} Hz, ${result.meta.samples} samples, ` +
         `${result.meta.windows} windows, median ${result.meta.medianMs.toFixed(0)} ms/window (chromium)\n`),
     )
 
-    const cmp = compare(label, got, reference.logits, reference.meta.windows, reference.meta.classes,
+    let lengthNote = ''
+    if (!result.meta.windowsMatch) {
+      // Resamplers disagree on output length by a sample or two, and one extra
+      // sample creates an entire extra (almost entirely zero-padded) window.
+      // Report it, then compare the windows both sides actually share — dropping
+      // the comparison altogether would hide the scores we came here to check.
+      const shared = Math.min(result.meta.windows, refWindows)
+      lengthNote =
+        `\n        window counts differ: browser ${result.meta.windows} vs reference ${refWindows} ` +
+        `(${result.meta.samples} samples vs ${reference.meta.totalSamples}); comparing the ${shared} shared windows`
+      process.stdout.write(dim(`   ${lengthNote.trim()}\n`))
+      got = got.subarray(0, shared * classes)
+      expected = expected.subarray(0, shared * classes)
+      refWindows = shared
+    }
+
+    const cmp = compare(label, got, expected, refWindows, classes,
       expectFail ? { scoreTol: Infinity, logitTol: Infinity } : {})
+    cmp.detail += lengthNote
+
+    if (!expectFail && !result.meta.windowsMatch) {
+      return {
+        name: label,
+        ok: false,
+        informational: false,
+        detail:
+          `the browser and the reference disagree on the number of analysis windows` +
+          `${lengthNote}. For a 48 kHz file this must not happen — investigate the audio chain.`,
+      }
+    }
 
     // The tensor diff above only covers the raw path. This is the second half of
     // level B: the shipping path (worker, thresholding, label mapping) must agree

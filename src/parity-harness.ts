@@ -27,8 +27,11 @@ import { isNonEvent, loadLabels } from './lib/birdnet/labels'
 interface ParityOutput {
   logits: number[]
   meta: {
-    originalRate: number
+    decodedRate: number
     windows: number
+    expectedWindows: number
+    windowsMatch: boolean
+    samples: number
     medianMs: number
     duration: number
     /** Largest |score| gap between the raw path and the analyzer path. */
@@ -66,12 +69,11 @@ window.runParity = async (audioUrl, expectedWindows, classes) => {
   // ---- pass 1: raw path, full logits -------------------------------------
   const audio = await decodeAudio(bytes.slice(0))
   const windows = planWindows(audio.samples.length, 0)
-  if (windows.length !== expectedWindows) {
-    throw new Error(
-      `window count differs from the reference: ${windows.length} vs ${expectedWindows}. ` +
-        `Decoded ${audio.samples.length} samples at ${audio.originalSampleRate} Hz.`,
-    )
-  }
+  // A window-count difference is itself a result, not a crash: resamplers do not
+  // agree on output length (librosa rounds up, the browser does not), and one
+  // extra sample buys a whole extra window. The caller decides whether that is
+  // fatal — it must be for level B, and is merely reported for level C.
+  const windowsMatch = windows.length === expectedWindows
 
   const { session } = await loadModel()
   const logits = new Float32Array(windows.length * N_CLASSES)
@@ -123,8 +125,11 @@ window.runParity = async (audioUrl, expectedWindows, classes) => {
   return {
     logits: Array.from(logits),
     meta: {
-      originalRate: audio.originalSampleRate,
+      decodedRate: audio.decodedSampleRate,
       windows: windows.length,
+      expectedWindows,
+      windowsMatch,
+      samples: audio.samples.length,
       medianMs: median(timings),
       duration: audio.duration,
       analyzerDrift,

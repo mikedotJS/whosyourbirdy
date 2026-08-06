@@ -27,9 +27,18 @@ export interface DecodedAudio {
   samples: Float32Array
   /** Duration in seconds, derived from `samples.length`. */
   duration: number
-  /** Sample rate the file was decoded at, before resampling. */
-  originalSampleRate: number
-  originalChannels: number
+  /**
+   * The rate the browser handed back from `decodeAudioData`.
+   *
+   * This is usually already `SAMPLE_RATE`, because Chromium and Firefox resample
+   * to the decoding context's rate — which is why we decode in a 48 kHz context
+   * on purpose. It is NOT necessarily the file's own rate, so do not present it
+   * to the user as "this file is 48 kHz".
+   */
+  decodedSampleRate: number
+  /** True when `resampleTo48k` had to do work, i.e. the decoder did not resample. */
+  resampled: boolean
+  channels: number
 }
 
 function assertAudioSupport(): void {
@@ -47,8 +56,14 @@ function assertAudioSupport(): void {
  */
 async function decodeToBuffer(data: ArrayBuffer): Promise<AudioBuffer> {
   assertAudioSupport()
-  // A 1-sample context just to reach decodeAudioData; the sample rate given here
-  // does not resample the decoded result, it only has to be a legal value.
+  // The context rate is deliberately 48 kHz, not incidental: Chromium and Firefox
+  // resample during `decodeAudioData` to the decoding context's rate, so asking
+  // for 48 kHz here gets the resampling done by the decoder in one pass. The
+  // official BirdNET browser demo does the same thing, and for the same reason —
+  // the default 44.1 kHz context would silently downsample every file.
+  //
+  // Safari has historically returned the file's own rate instead, which is why
+  // `resampleTo48k` below is a real fallback and not dead code.
   const ctx = new OfflineAudioContext(1, 1, SAMPLE_RATE)
   try {
     return await ctx.decodeAudioData(data)
@@ -117,7 +132,8 @@ export async function decodeAudio(input: ArrayBuffer | Blob): Promise<DecodedAud
   return {
     samples,
     duration: samples.length / SAMPLE_RATE,
-    originalSampleRate: buffer.sampleRate,
-    originalChannels: buffer.numberOfChannels,
+    decodedSampleRate: buffer.sampleRate,
+    resampled: buffer.sampleRate !== SAMPLE_RATE,
+    channels: buffer.numberOfChannels,
   }
 }

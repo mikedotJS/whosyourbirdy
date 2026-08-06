@@ -46,15 +46,25 @@ Le navigateur décode wav, mp3, flac, m4a, ogg selon son moteur. On ne réimplé
 BirdNET analyse du mono. La moyenne (et non la sélection du canal gauche) préserve les sources
 présentes uniquement sur un canal.
 
-### 3. Rééchantillonnage à 48 kHz — `OfflineAudioContext`
+### 3. Rééchantillonnage à 48 kHz
 
 Le modèle a été entraîné à 48 kHz. Le rééchantillonnage est **délégué au navigateur** : écrire notre
 propre rééchantillonneur ne nous rapprocherait pas de `resampy` (celui de BirdNET), ça déplacerait
-juste l'écart. Un fichier déjà en 48 kHz n'est pas touché du tout — c'est le cas le plus fréquent en
-enregistrement de terrain, et il est alors **bit-exact** vis-à-vis de la référence.
+juste l'écart.
 
-L'écart résiduel sur les fichiers à convertir est **mesuré** par le niveau C du test de parité,
-jamais compensé.
+Détail qui compte, vérifié à l'exécution : **`decodeAudioData` rééchantillonne vers la fréquence du
+contexte de décodage**. On décode donc délibérément dans un `OfflineAudioContext` à 48 kHz — c'est
+aussi ce que fait la démo navigateur officielle de BirdNET, et pour la même raison : le contexte par
+défaut à 44,1 kHz sous-échantillonnerait silencieusement chaque fichier. Sous Chromium et Firefox,
+le rééchantillonnage a donc déjà eu lieu à la sortie du décodeur.
+
+L'étape `resampleTo48k` explicite reste là comme **repli réel** : Safari a historiquement renvoyé la
+fréquence propre du fichier plutôt que celle du contexte. Ce n'est pas du code mort.
+
+Un fichier déjà en 48 kHz traverse la chaîne **sans être altéré** — cas le plus fréquent en
+enregistrement de terrain, et c'est le régime du niveau B (9,4 × 10⁻⁵).
+
+L'écart résiduel sur les fichiers à convertir est **mesuré** par le niveau C, jamais compensé.
 
 ### 4. Fenêtrage : 144 000 échantillons, hop de 144 000
 
@@ -195,3 +205,30 @@ Citation :
 
 > Kahl, S., Wood, C. M., Eibl, M., & Klinck, H. (2021). BirdNET: A deep learning solution for avian
 > diversity monitoring. *Ecological Informatics*, 61, 101236.
+
+## Résultats de parité actuels
+
+Sur `soundscape.wav` (40 fenêtres × 6 522 classes = 260 880 comparaisons par niveau) :
+
+| Niveau | `max|Δscore|` | `max|Δlogit|` | Détections divergentes à 0,25 |
+|---|---|---|---|
+| A — modèle seul | 6,8 × 10⁻⁵ | 9,7 × 10⁻⁴ | **0** |
+| B — chaîne complète (Chromium) | 9,4 × 10⁻⁵ | 1,4 × 10⁻³ | **0** |
+| C — rééchantillonné 44,1 kHz | 1,4 × 10⁻³ | 2,4 × 10⁻² | **0** |
+
+Soit un ordre de grandeur sous le seuil demandé de 1 × 10⁻³ pour les niveaux A et B.
+
+### Ce que le niveau C a mis au jour
+
+Sur un fichier qui doit être rééchantillonné, `librosa.resample` (côté BirdNET) renvoie
+**5 760 001** échantillons là où le ratio exact vaut 5 760 000,0 — un arrondi `ceil` sur un flottant.
+Cet unique échantillon en trop crée une **41ᵉ fenêtre entière**, composée d'un échantillon réel et de
+143 999 zéros.
+
+Autrement dit : sur un fichier non-48 kHz, BirdNET-Analyzer et cet outil peuvent ne pas être d'accord
+sur le *nombre de fenêtres analysées*. Le harnais le signale explicitement et compare les fenêtres
+communes, plutôt que de masquer l'écart. L'écart de score qui subsiste (1,4 × 10⁻³) ne change **aucune**
+détection au seuil de 0,25.
+
+**Conseil pratique** : donner des fichiers déjà en 48 kHz. Ils ne sont alors ni rééchantillonnés ni
+altérés, et le résultat est celui du niveau B.

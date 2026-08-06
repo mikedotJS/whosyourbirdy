@@ -118,6 +118,9 @@ async function analyze(request: Extract<WorkerRequest, { type: 'analyze' }>): Pr
     )
   }
 
+  // A cancel that lands after the last window would otherwise sit in the set for
+  // the lifetime of the worker.
+  cancelled.delete(requestId)
   post({ type: 'done', requestId, windowCount: windows.length, totalMs: performance.now() - started, timings },
     [timings.buffer])
 }

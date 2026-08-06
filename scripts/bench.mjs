@@ -47,6 +47,9 @@ function serveStatic() {
   }
   const server = createServer((req, res) => {
     const url = decodeURIComponent(req.url.split('?')[0])
+    // Answer the browser's automatic favicon probe so it does not show up as a
+    // 404 and mask a real missing asset.
+    if (url === '/favicon.ico') { res.writeHead(204).end(); return }
     for (const root of roots) {
       const path = join(root, url)
       if (path.startsWith(root) && existsSync(path) && !path.endsWith('/')) {

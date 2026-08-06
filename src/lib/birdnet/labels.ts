@@ -12,20 +12,27 @@ export interface Species {
 }
 
 /**
- * BirdNET ships 10 non-event classes among the 6522. They are real predictions,
- * not padding, and are useful for diagnosing a noisy recording — but they are not
- * birds, so callers can filter them out.
+ * The non-event classes among the 6522. They are real predictions, not padding,
+ * and are useful for diagnosing a noisy recording — but they are not birds, so
+ * callers can filter them out.
+ *
+ * Upstream documentation says "10 non-event classes"; the label file actually
+ * contains 11. This list was read off the shipped labels rather than the prose,
+ * and `assertNonEventsPresent` re-checks it at parse time — a name that stops
+ * matching would otherwise make `excludeNonEvents` silently filter nothing.
+ * These entries are identical in every locale (they are not translated).
  */
 const NON_EVENT_SCIENTIFIC = new Set([
-  'Human vocal',
-  'Human non-vocal',
-  'Human whistle',
-  'Noise',
   'Dog',
   'Engine',
   'Environmental',
   'Fireworks',
   'Gun',
+  'Human non-vocal',
+  'Human vocal',
+  'Human whistle',
+  'Noise',
+  'Power tools',
   'Siren',
 ])
 
@@ -49,7 +56,7 @@ export function parseLabels(text: string): Species[] {
     throw new Error(`label file has ${lines.length} entries, expected ${N_CLASSES}`)
   }
 
-  return lines.map((line, index) => {
+  const species = lines.map((line, index) => {
     const sep = line.indexOf('_')
     if (sep === -1) {
       throw new Error(`label ${index} is missing its "_" separator: ${line}`)
@@ -60,6 +67,20 @@ export function parseLabels(text: string): Species[] {
       commonName: line.slice(sep + 1).trim(),
     }
   })
+
+  assertNonEventsPresent(species)
+  return species
+}
+
+/** Fail loudly if the non-event names drift, rather than filtering nothing. */
+function assertNonEventsPresent(species: Species[]): void {
+  const found = new Set(
+    species.filter((s) => NON_EVENT_SCIENTIFIC.has(s.scientificName)).map((s) => s.scientificName),
+  )
+  if (found.size !== NON_EVENT_SCIENTIFIC.size) {
+    const missing = [...NON_EVENT_SCIENTIFIC].filter((name) => !found.has(name))
+    throw new Error(`non-event classes missing from the label file: ${missing.join(', ')}`)
+  }
 }
 
 const cache = new Map<Locale, Promise<Species[]>>()

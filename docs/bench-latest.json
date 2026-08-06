@@ -1,0 +1,13 @@
+{
+  "platform": "linux x64",
+  "browser": "Chromium 141.0.7390.37",
+  "backend": "onnxruntime-web wasm, SIMD, 1 thread",
+  "windows": 120,
+  "medianMs": 103.6,
+  "p95Ms": 136.9,
+  "minMs": 96.7,
+  "maxMs": 336.8,
+  "realtimeFactor": 29,
+  "decodeMs": 204,
+  "modelLoadMs": 1535
+}

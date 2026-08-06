@@ -19,11 +19,25 @@ tel quel sur un Mac et remplir les lignes manquantes.
 
 | Plateforme | Navigateur | Médiane / fenêtre | p95 | Temps réel |
 |---|---|---|---|---|
-| Linux x86_64 (4 cœurs) | Chromium headless | voir `bench-latest.json` | — | — |
+| Linux x86_64, 4 cœurs | Chromium 141 headless | **103,6 ms** | 136,9 ms | **29×** |
 | macOS Apple Silicon | Chrome | _à mesurer_ | | |
 | macOS Apple Silicon | Safari | _à mesurer_ | | |
 
+Mesuré sur 120 fenêtres (3 passes × 40), `soundscape.wav`. Min 96,7 ms, max 336,8 ms — le max est la
+première fenêtre, avant que le runtime n'ait chauffé.
+
+Autres coûts sur la même machine :
+
+| Étape | Temps |
+|---|---|
+| Décodage + rééchantillonnage de 120 s d'audio | 204 ms |
+| Chargement du modèle (52 Mo, réseau local, cache vide) | 1 535 ms |
+| **Fichier de 2 minutes, bout en bout** | **~4 s** |
+
 `docs/bench-latest.json` est écrit par `pnpm bench` et contient la dernière mesure locale.
+
+29× temps réel en mono-thread laisse une marge confortable pour le mode micro de P3, qui n'a besoin
+que de 1×.
 
 ## Lecture des chiffres
 
