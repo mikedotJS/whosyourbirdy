@@ -237,7 +237,11 @@ async function main() {
     // Focusing must actually change the picture, not just the list.
     const blueWhenFocused = await countFocusColour(page)
     await page.locator(`${ROWS} button`).first().click() // unpin
-    await page.waitForTimeout(400)
+    // The pointer is still resting on the row after the click, and hover alone
+    // keeps a species focused — by design. Move away before measuring, or this
+    // compares the focused state with itself.
+    await page.mouse.move(5, 5)
+    await page.waitForTimeout(500)
     const blueWhenNot = await countFocusColour(page)
     check(
       'focusing a species repaints its bands in the picture',
@@ -257,25 +261,29 @@ async function main() {
     const scrubbed = Number(await page.locator('[role=slider]').getAttribute('aria-valuenow'))
     check('dragging the timeline scrubs', scrubbed > 60, `position ${scrubbed}s after drag to ~68%`)
 
-    // A parked playhead must not keep the canvas animating forever.
-    const frames = await page.evaluate(
+    // A parked playhead must not keep the canvas animating forever. Count real
+    // repaints by instrumenting the call every draw makes, rather than trusting
+    // that rAF is idle.
+    const draws = await page.evaluate(
       () =>
         new Promise((resolve) => {
+          const proto = CanvasRenderingContext2D.prototype
+          const original = proto.clearRect
           let n = 0
-          const start = performance.now()
-          const tick = () => {
+          proto.clearRect = function (...args) {
             n++
-            if (performance.now() - start < 1000) requestAnimationFrame(tick)
-            else resolve(n)
+            return original.apply(this, args)
           }
-          requestAnimationFrame(tick)
+          setTimeout(() => {
+            proto.clearRect = original
+            resolve(n)
+          }, 1200)
         }),
     )
-    const painting = await page.evaluate(() => window.__specDraws ?? null)
     check(
-      'the animation loop stops once nothing is moving',
-      painting === null || painting < 5,
-      painting === null ? `rAF available (${frames}/s), no draw counter exposed` : `${painting} draws/s`,
+      'the canvas stops repainting once nothing is moving',
+      draws < 5,
+      `${draws} repaints in 1.2 s with a parked playhead`,
     )
 
     // The slider must filter in memory, not re-run the model.
