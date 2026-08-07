@@ -480,9 +480,12 @@ async function main() {
     const headerAfter = await page.locator('.app-header').boundingBox()
     check(
       'the header and action bar stay put while the content scrolls',
+      // 2px, not 0: the header is sticky and sits one pixel below the scroll
+      // sentinel at rest, so it gives that pixel back when it pins. A bar that
+      // actually scrolled away would move by hundreds.
       scrolledBy > 50 &&
-        Math.abs(barBefore.y - barAfter.y) < 1 &&
-        Math.abs(headerBefore.y - headerAfter.y) < 1,
+        Math.abs(barBefore.y - barAfter.y) <= 2 &&
+        Math.abs(headerBefore.y - headerAfter.y) <= 2,
       `content scrolled ${Math.round(scrolledBy)}px, bar moved ${Math.abs(barBefore.y - barAfter.y).toFixed(1)}px`,
     )
     await page.screenshot({ path: join(shotsDir, '7-phone-scrolled.png') })

@@ -79,8 +79,8 @@ export function SpeciesList({ groups, pinned, hovered, playingSpecies, onPin, on
                 // min-h-14 rather than padding alone: a one-line species name
                 // would otherwise make a shorter row than a two-line one, and
                 // some rows would fall under the 44px touch minimum.
-                'flex min-h-14 w-full items-center gap-3 py-2 text-left transition-colors duration-150',
-                isFocused ? 'bg-raised' : 'hover:bg-hover',
+                'flex min-h-14 w-full items-center gap-3 rounded-lg px-2 py-2 text-left transition-colors duration-150',
+                isFocused ? 'row-sheen' : 'hover:bg-hover',
               ].join(' ')}
             >
               {/* One rail, three states, and playing wins: while a segment is

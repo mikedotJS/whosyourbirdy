@@ -286,10 +286,35 @@ Le premier jet de la palette **a échoué** la validation : les deux accents tom
 conservés parce qu'ils étaient jolis.
 
 Inter variable est **auto-hébergé** (48 Ko en latin) : le projet doit fonctionner hors ligne, donc
-aucune police de CDN. Le grain SVG (`feTurbulence`, 3,5 %) casse le banding des aplats sombres sur
-les dalles bon marché ; à cette opacité il ne touche pas les contrastes ci-dessus. C'est le seul
-ornement, et la lueur dorée ambiante ne se pose que derrière le spectrogramme — le seul objet qui la
-mérite.
+aucune police de CDN.
+
+#### La matière : aurore, verre, dégradés
+
+- **L'aurore.** Trois larges dégradés radiaux — or, corail, bleu de focus — très flous, derrière tout
+  le reste. C'est la seule chose purement décorative de l'interface, et elle gagne sa place en étant
+  *ce que le verre a à réfracter* : un panneau flouté au-dessus d'un aplat ressemble à de l'opacité,
+  au-dessus de ça il ressemble à du verre. Elle dérive lentement — **exception assumée** à la règle
+  tenue depuis P2 (« rien ne bouge qui ne signifie »), bornée : 48 s par cycle, rien n'y est lisible
+  comme donnée, elle ne touche jamais la zone de tracé, et `prefers-reduced-motion` l'arrête net.
+- **Le verre.** Panneau, en-tête, barre et feuille sont translucides et floutent ce qu'il y a
+  derrière. L'en-tête et la barre sont `sticky` **à l'intérieur** du défileur et non des rangées de
+  grille à côté : le contenu doit passer *sous* le verre, sinon le flou ne montre rien.
+- **Le liseré de lumière.** Un trait de 1 px sur l'arête haute de chaque surface. C'est lui, plus que
+  le flou, qui fait lire une couche translucide comme une plaque physique plutôt que comme de
+  l'opacité.
+- **Les dégradés** sont réservés à ce qui agit : l'action principale (corail vers l'or, avec sa lueur),
+  le remplissage du curseur de seuil, le liseré du cadre du spectrogramme, le lavis de la ligne
+  sélectionnée. Rien d'inerte n'a de dégradé.
+- **Le grain** (`feTurbulence`, 5,5 %, en `overlay`) casse le banding des aplats sombres sur les
+  dalles bon marché.
+
+Le verre a un coût qu'il faut mesurer et pas supposer : **le fond effectif n'est plus
+`--color-surface`**, donc tous les contrastes mesurés sur la palette à plat sont des majorants. Le
+vrai pire cas — le point le plus lumineux de l'aurore, juste derrière la couche la plus fine — est
+**5,79 : 1 en sombre et 4,96 : 1 en clair** pour l'encre la plus faible. `node
+scripts/check_glass_contrast.mjs` recalcule ces valeurs à partir des mixages réels et sort en erreur
+si un changement passe une encre sous 4,5 : 1. J'avais d'abord écrit 6,8 : 1 dans le code de mémoire ;
+le script a montré 5,79.
 
 ### La forme : un téléphone, à toutes les tailles
 

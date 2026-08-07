@@ -28,7 +28,16 @@
 
 const VERSION = '__VERSION__'
 const SHELL = 'shell-' + VERSION
-const RUNTIME = 'runtime-v1'
+/*
+ * Keyed on the ONNX Runtime package version, not on the build.
+ *
+ * The files under `/ort/` have *stable* names — `ort-wasm-simd-threaded.jsep.wasm`
+ * is called that in every release — so a cache-first strategy would keep serving
+ * an old 24 MB runtime forever after an upgrade. Naming the cache after the shell
+ * version would fix that and throw the 24 MB away on every deploy instead. The
+ * package version is the thing that actually changes when those bytes change.
+ */
+const RUNTIME = 'runtime-ort-__ORT_VERSION__'
 const PRECACHE = __PRECACHE__
 
 self.addEventListener('install', (event) => {
@@ -48,7 +57,11 @@ self.addEventListener('activate', (event) => {
       .then((keys) =>
         Promise.all(
           keys
-            .filter((key) => key.startsWith('shell-') && key !== SHELL)
+            .filter(
+              (key) =>
+                (key.startsWith('shell-') && key !== SHELL) ||
+                (key.startsWith('runtime-ort-') && key !== RUNTIME),
+            )
             .map((key) => caches.delete(key)),
         ),
       )

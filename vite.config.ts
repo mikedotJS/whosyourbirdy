@@ -102,8 +102,17 @@ function pwaAssets(): Plugin {
       // cache in the worker's activate step.
       const version = createHash('sha256').update(precache.join('\n')).digest('hex').slice(0, 12)
 
+      // The runtime cache is keyed on this rather than on the build, because the
+      // `/ort/` filenames are stable across releases: cache-first on a stable
+      // name would serve an obsolete 24 MB runtime forever after an upgrade, and
+      // keying on the build would discard those 24 MB on every deploy instead.
+      const ortVersion = JSON.parse(
+        readFileSync(resolve(__dirname, 'node_modules/onnxruntime-web/package.json'), 'utf8'),
+      ).version
+
       const source = readFileSync(SW_TEMPLATE, 'utf8')
         .replace('__VERSION__', version)
+        .replace('__ORT_VERSION__', ortVersion)
         .replace('__PRECACHE__', JSON.stringify(precache, null, 2))
 
       this.emitFile({ type: 'asset', fileName: 'sw.js', source })

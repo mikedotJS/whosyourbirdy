@@ -32,10 +32,12 @@ export function ThresholdSlider({ value, min, onChange, total, visible }: Props)
         step={0.01}
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
+        // The filled portion has to know where the value is; CSS cannot read it.
+        style={{ '--fill': `${((value - min) / (0.99 - min)) * 100}%` } as React.CSSProperties}
         // A native range input is about 20px tall — under half the 44px a thumb
         // needs. Growing the element itself, rather than padding a wrapper,
         // grows the hit area; padding around it only grows the whitespace.
-        className="h-11 w-full accent-focus"
+        className="range-aube h-11 w-full"
       />
       <p className="text-xs text-ink-3">
         BirdNET utilise 0,25 par défaut. Plus bas = plus de détections, dont davantage de faux

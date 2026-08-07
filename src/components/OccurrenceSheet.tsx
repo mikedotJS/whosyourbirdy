@@ -55,11 +55,11 @@ export function OccurrenceSheet({ group, playing, onClose, onPlay }: Props) {
                       // A 44px minimum, both ways. The old chips were 24px tall
                       // and about 56 wide — fine with a mouse, a coin toss with
                       // a thumb.
-                      'flex min-h-11 w-full flex-col items-center justify-center rounded-md',
+                      'flex min-h-11 w-full flex-col items-center justify-center rounded-xl border',
                       'text-sm tabular-nums transition-colors duration-150',
                       isPlaying
-                        ? 'bg-play text-on-play'
-                        : 'bg-hover text-ink-2 hover:bg-line hover:text-ink',
+                        ? 'btn-primary border-transparent'
+                        : 'border-line bg-hover text-ink-2 hover:border-line-strong hover:text-ink',
                     ].join(' ')}
                   >
                     <span className="font-medium">{clock(occurrence.start)}</span>

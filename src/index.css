@@ -37,12 +37,33 @@
      3.63:1 — the opposite of the light mode below. */
   --color-on-play: #0a0b14;
 
-  /* Dawn gold: the spectrogram ramp's bright end, and the only ambient light. */
+  /* Dawn gold: the spectrogram ramp's bright end, and the ambient light. */
   --color-gold: #efc373;
 
   --radius-sm: 4px;
   --radius-md: 8px;
   --radius-lg: 12px;
+
+  /*
+   * Material.
+   *
+   * The panel and the chrome are translucent and blur what is behind them, so
+   * the ambient wash shows through as colour rather than as shape.
+   *
+   * That means the effective background is NOT `--color-surface`, and every
+   * contrast figure measured against the flat palette is an upper bound. The
+   * real worst case — the brightest point of the wash, directly behind the
+   * thinnest layer — is **5.79:1 dark and 4.96:1 light** for the weakest ink,
+   * both above 4.5:1. `node scripts/check_glass_contrast.mjs` recomputes it from
+   * these very values and exits non-zero if a change to the mixes or to the wash
+   * pushes any ink under. Change one, re-run it.
+   */
+  --glass-panel: color-mix(in oklab, var(--color-surface) 82%, transparent);
+  --glass-chrome: color-mix(in oklab, var(--color-surface) 72%, transparent);
+  --glass-sheet: color-mix(in oklab, var(--color-raised) 80%, transparent);
+  /* The 1px catch-light along a top edge. This, more than the blur, is what
+     makes a translucent panel read as a physical sheet rather than as opacity. */
+  --edge-light: rgb(255 255 255 / 0.09);
 }
 
 @media (prefers-color-scheme: light) {
@@ -63,6 +84,12 @@
     --color-on-play: #ffffff;
 
     --color-gold: #8a5a12;
+
+    --glass-panel: color-mix(in oklab, #ffffff 78%, transparent);
+    --glass-chrome: color-mix(in oklab, #ffffff 70%, transparent);
+    --glass-sheet: color-mix(in oklab, #ffffff 82%, transparent);
+    /* A catch-light on paper is a *shadow* line, not a white one. */
+    --edge-light: rgb(255 255 255 / 0.7);
   }
 }
 
@@ -122,6 +149,56 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
+  isolation: isolate;
+}
+
+/*
+ * The ambient wash: dawn, abstracted.
+ *
+ * Three very large radial gradients — gold, coral, focus blue — at low alpha,
+ * heavily blurred. It is the one purely decorative thing in the interface, and
+ * it earns its place by being what the glass has to refract: a blurred panel
+ * over a flat colour looks like opacity, over this it looks like glass.
+ *
+ * It drifts, slowly. That is a deliberate exception to the rule this project has
+ * held since P2 — nothing moves that does not mean something — and the exception
+ * is bounded: 48 s per cycle, nothing about it is readable as data, and
+ * `prefers-reduced-motion` stops it dead. It never touches the plot area.
+ */
+.app-frame::before {
+  content: '';
+  position: fixed;
+  inset: -20%;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(34% 40% at 18% 12%, color-mix(in oklab, var(--color-gold) 62%, transparent), transparent 68%),
+    radial-gradient(38% 34% at 86% 22%, color-mix(in oklab, var(--color-play) 52%, transparent), transparent 70%),
+    radial-gradient(42% 42% at 68% 92%, color-mix(in oklab, var(--color-focus) 46%, transparent), transparent 72%),
+    radial-gradient(30% 30% at 8% 78%, color-mix(in oklab, var(--color-focus) 34%, transparent), transparent 70%);
+  filter: blur(52px);
+  opacity: 0.62;
+  animation: drift 48s ease-in-out infinite alternate;
+}
+
+@media (prefers-color-scheme: light) {
+  /* Warm paper takes far less colour before it turns muddy. */
+  .app-frame::before {
+    opacity: 0.3;
+    filter: blur(64px);
+  }
+}
+
+@keyframes drift {
+  to {
+    transform: translate3d(2%, -3%, 0) scale(1.08);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-frame::before {
+    animation: none;
+  }
 }
 
 .app-panel {
@@ -130,13 +207,15 @@ body {
   max-width: var(--panel-width);
   height: calc(100dvh - 2 * var(--panel-inset));
   border-radius: var(--panel-radius);
-  background: var(--color-surface);
+  background: var(--glass-panel);
+  -webkit-backdrop-filter: blur(28px) saturate(150%);
+  backdrop-filter: blur(28px) saturate(150%);
   overflow: hidden;
-  /* Fixed header, scrolling middle, fixed bar. `minmax(0, 1fr)` and not `1fr`:
-     a plain 1fr row refuses to shrink below its content and the scroller never
-     scrolls, it just pushes the bar off screen. */
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  /* One scrolling column. The header and the bar are sticky inside it rather
+     than grid rows outside it, so content passes *beneath* the glass instead of
+     stopping at its edge — which is the whole point of frosting it. */
+  display: flex;
+  flex-direction: column;
   /* Landscape handsets have side insets too. Once the panel is inset, the inset
      already clears them, so this collapses to zero on desktop. */
   padding-left: max(0px, calc(env(safe-area-inset-left) - var(--panel-inset)));
@@ -146,24 +225,64 @@ body {
 @media (min-width: 480px) and (min-height: 560px) {
   .app-panel {
     border: 1px solid var(--color-line);
-    box-shadow: 0 24px 80px -24px rgb(0 0 0 / 0.55);
+    box-shadow:
+      inset 0 1px 0 var(--edge-light),
+      0 2px 8px -2px rgb(0 0 0 / 0.3),
+      0 40px 100px -30px rgb(0 0 0 / 0.6);
+    animation: panel-in 520ms cubic-bezier(0.16, 1, 0.3, 1) both;
   }
 }
 
-/* Same trick vertically: the notch only needs padding while the panel is
-   full-bleed. */
+/* The app arriving is a state change, so it gets to be animated once. */
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.99);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-panel {
+    animation: none;
+  }
+}
+
+.app-scroll {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  /* Reaching the end of the list must not start scrolling something behind it. */
+  overscroll-behavior: contain;
+}
+
+/* Sticky, not fixed: the element keeps its slot in the flow, so nothing has to
+   be padded by hand to match a chrome height that changes with its content. */
 .app-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--glass-chrome);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  backdrop-filter: blur(20px) saturate(180%);
+  /* Same trick as the panel: the notch only needs padding while the panel is
+     full-bleed. */
   padding-top: max(0px, calc(env(safe-area-inset-top) - var(--panel-inset)));
 }
 
 .app-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 20;
+  /* Holds the bar against the bottom when the content is shorter than the
+     panel, and lets it stick when it is taller. */
+  margin-top: auto;
+  background: var(--glass-chrome);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  backdrop-filter: blur(20px) saturate(180%);
+  box-shadow: inset 0 1px 0 var(--edge-light);
   padding-bottom: max(0px, calc(env(safe-area-inset-bottom) - var(--panel-inset)));
-}
-
-.app-scroll {
-  overflow-y: auto;
-  /* Reaching the end of the list must not start scrolling something behind it. */
-  overscroll-behavior: contain;
 }
 
 /*
@@ -197,7 +316,8 @@ h2 {
      it, which is the right answer anyway — a modal should read as unfilmed. */
   z-index: 60;
   pointer-events: none;
-  opacity: 0.035;
+  opacity: 0.055;
+  mix-blend-mode: overlay;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
@@ -250,7 +370,12 @@ h2 {
   border: 0;
   border-top: 1px solid var(--color-line-strong);
   border-radius: 20px 20px var(--panel-radius) var(--panel-radius);
-  background: var(--color-raised);
+  background: var(--glass-sheet);
+  -webkit-backdrop-filter: blur(32px) saturate(170%);
+  backdrop-filter: blur(32px) saturate(170%);
+  box-shadow:
+    inset 0 1px 0 var(--edge-light),
+    0 -20px 60px -20px rgb(0 0 0 / 0.5);
   color: var(--color-ink);
   overflow: hidden;
   flex-direction: column;
@@ -274,7 +399,9 @@ h2 {
    annotate the picture, and covering the picture would defeat it. */
 
 .sheet::backdrop {
-  background: rgb(0 0 0 / 0.45);
+  background: rgb(4 4 10 / 0.5);
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
 }
 
 .sheet[open] {
@@ -310,4 +437,192 @@ h2 {
    the transition must be off; it comes back for the release. */
 .sheet-settling {
   transition: transform 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/*
+ * The primary action.
+ *
+ * A gradient from the coral toward the dawn gold, plus a glow in its own hue.
+ * The contrast was re-measured rather than assumed: the gradient's lighter end
+ * is 7.2:1 against `--color-on-play` in dark mode, up from the flat coral's
+ * 5.40:1, and in light mode the mix runs *darker* so the white on it improves
+ * too. The gradient moves both modes in the safe direction, which is why it is
+ * allowed to exist at all.
+ */
+.btn-primary {
+  background-image: linear-gradient(
+    135deg,
+    var(--color-play) 0%,
+    color-mix(in oklab, var(--color-play) 62%, var(--color-gold)) 100%
+  );
+  color: var(--color-on-play);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.22),
+    0 6px 22px -8px color-mix(in oklab, var(--color-play) 75%, transparent);
+  transition:
+    transform 140ms cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 140ms ease-out;
+}
+
+.btn-primary:hover {
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.28),
+    0 10px 30px -8px color-mix(in oklab, var(--color-play) 85%, transparent);
+}
+
+.btn-primary:active {
+  transform: translateY(1px) scale(0.99);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn-primary {
+    transition: none;
+  }
+  .btn-primary:active {
+    transform: none;
+  }
+}
+
+/*
+ * The card the spectrogram sits in.
+ *
+ * A hairline gradient border — bright at the top-left, fading out — reads as a
+ * lit edge rather than as a stroke. Painted with a masked pseudo-element because
+ * `border-image` cannot follow a border radius.
+ */
+.glass-card {
+  position: relative;
+  border-radius: 16px;
+  background: color-mix(in oklab, var(--color-raised) 55%, transparent);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+
+.glass-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  pointer-events: none;
+  background: linear-gradient(
+    145deg,
+    color-mix(in oklab, var(--color-gold) 55%, transparent),
+    var(--color-line) 45%,
+    transparent 80%
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+}
+
+/*
+ * The threshold slider.
+ *
+ * Native range inputs cannot show a filled portion in a colour of their own
+ * (`accent-color` tints the whole control), and this one is the only continuous
+ * control in the app — it should look like the thing you drag. `--fill` is
+ * written from React as a percentage, so the gradient stop tracks the value.
+ */
+.range-aube {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+}
+
+.range-aube::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklab, var(--color-focus) 70%, var(--color-gold)) 0%,
+    var(--color-focus) var(--fill, 25%),
+    var(--color-line-strong) var(--fill, 25%)
+  );
+}
+
+.range-aube::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 20px;
+  height: 20px;
+  margin-top: -7px; /* centres a 20px thumb on a 6px track */
+  border-radius: 999px;
+  background: var(--color-ink);
+  border: 2px solid var(--color-focus);
+  box-shadow:
+    0 2px 8px -2px rgb(0 0 0 / 0.5),
+    0 0 0 6px color-mix(in oklab, var(--color-focus) 14%, transparent);
+  transition: box-shadow 140ms ease-out;
+}
+
+.range-aube:active::-webkit-slider-thumb {
+  box-shadow:
+    0 2px 8px -2px rgb(0 0 0 / 0.5),
+    0 0 0 10px color-mix(in oklab, var(--color-focus) 20%, transparent);
+}
+
+.range-aube::-moz-range-track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--color-line-strong);
+}
+
+.range-aube::-moz-range-progress {
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklab, var(--color-focus) 70%, var(--color-gold)),
+    var(--color-focus)
+  );
+}
+
+.range-aube::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--color-ink);
+  border: 2px solid var(--color-focus);
+}
+
+/*
+ * The drop zone, which is the whole first screen.
+ *
+ * A dashed rectangle over a large emptiness reads as a disabled form field. The
+ * wash and the lit badge give it enough presence to look like the one thing to
+ * do here, without becoming a second accent.
+ */
+.dropzone {
+  background-image: radial-gradient(
+    70% 60% at 50% 35%,
+    color-mix(in oklab, var(--color-gold) 9%, transparent),
+    transparent 72%
+  );
+  transition:
+    border-color 140ms ease-out,
+    background-color 140ms ease-out;
+}
+
+.dropzone-badge {
+  background-image: linear-gradient(
+    150deg,
+    color-mix(in oklab, var(--color-gold) 26%, transparent),
+    color-mix(in oklab, var(--color-play) 16%, transparent)
+  );
+  box-shadow: inset 0 1px 0 var(--edge-light);
+}
+
+/* A wash from the focus hue across the selected row, so selection is a change of
+   material and not only of background level. */
+.row-sheen {
+  background-image: linear-gradient(
+    90deg,
+    color-mix(in oklab, var(--color-focus) 16%, transparent) 0%,
+    transparent 62%
+  );
 }

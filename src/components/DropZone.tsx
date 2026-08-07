@@ -39,13 +39,15 @@ export function DropZone({ onFile, onBrowse }: Props) {
         // `grow` so it fills the idle screen: it is the only thing to do here,
         // and a small dashed box floating above a lot of nothing reads as a
         // form field rather than as the app's one action.
-        'flex w-full grow flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed',
-        'px-6 py-14 text-center transition-colors duration-150',
+        'dropzone flex w-full grow flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed',
+        'px-6 py-14 text-center',
         over ? 'border-focus bg-raised' : 'border-line hover:border-line-strong hover:bg-hover',
       ].join(' ')}
     >
-      <UploadIcon />
-      <span className="mt-1 text-base font-medium">Choisir un enregistrement</span>
+      <span className="dropzone-badge mb-2 flex h-14 w-14 items-center justify-center rounded-2xl">
+        <UploadIcon />
+      </span>
+      <span className="text-base font-medium">Choisir un enregistrement</span>
       <span className="text-sm text-ink-3">ou le déposer ici</span>
       <span className="text-xs text-ink-3">wav, mp3, flac, m4a, ogg — idéalement en 48 kHz</span>
     </button>
@@ -57,7 +59,7 @@ function UploadIcon() {
     <svg
       aria-hidden
       viewBox="0 0 24 24"
-      className="h-7 w-7 text-ink-3"
+      className="h-6 w-6 text-ink-2"
       fill="none"
       stroke="currentColor"
       strokeWidth="1.5"

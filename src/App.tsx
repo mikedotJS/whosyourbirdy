@@ -216,7 +216,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={browse}
-                className="flex h-11 shrink-0 items-center justify-center rounded-lg bg-play px-4 text-sm font-medium text-on-play transition-opacity duration-150 hover:opacity-90"
+                className="btn-primary flex h-11 shrink-0 items-center justify-center rounded-xl px-4 text-sm font-medium"
               >
                 {file ? 'Autre fichier' : 'Choisir un fichier'}
               </button>
@@ -224,9 +224,9 @@ export default function App() {
           )
         }
       >
-        {/* `min-h-full` so the attribution below can be pushed to the bottom of
-            the scroller instead of floating under a short drop zone. */}
-        <div className="flex min-h-full flex-col gap-4 pt-2 pb-4">
+        {/* `flex-1` so the attribution below can be pushed to the bottom of the
+            scroller instead of floating under a short drop zone. */}
+        <div className="flex flex-1 flex-col gap-4 pt-2 pb-4">
           {!file && <DropZone onFile={handleFile} onBrowse={browse} />}
 
           {/* The picture arrives before the first window, so the analysis front
@@ -234,14 +234,14 @@ export default function App() {
           {state.spectrogram && (
             /* The only ambient light in the interface, and it sits behind the
                one object that earns it. */
-            <div className="relative">
+            <div className="glass-card relative px-2 pt-1 pb-2">
               <div
                 aria-hidden
-                className="pointer-events-none absolute -inset-x-6 -inset-y-4 -z-10 rounded-lg blur-2xl"
+                className="pointer-events-none absolute -inset-x-8 -inset-y-6 -z-10 rounded-2xl blur-3xl"
                 style={{
                   background:
                     'radial-gradient(60% 70% at 50% 55%, var(--color-gold) 0%, transparent 70%)',
-                  opacity: 0.09,
+                  opacity: 0.16,
                 }}
               />
               <Spectrogram

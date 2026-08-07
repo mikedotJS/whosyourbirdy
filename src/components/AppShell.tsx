@@ -45,23 +45,27 @@ export function AppShell({ header, bar, children }: Props) {
   return (
     <div className="app-frame grain">
       <div className="app-panel">
-        <header
-          className={[
-            'app-header z-10 px-4 pb-2.5 transition-colors duration-150',
-            scrolled ? 'border-b border-line bg-surface' : 'border-b border-transparent',
-          ].join(' ')}
-        >
-          {header}
-        </header>
+        {/* The header and the bar are sticky children of the scroller, not
+            siblings of it: content has to pass under the frosted glass for the
+            blur to be showing anything. */}
+        <main className="app-scroll">
+          {/* Before the header, so the rule appears on the first pixel of scroll
+              rather than one header-height later. */}
+          <div ref={sentinelRef} aria-hidden className="h-px shrink-0" />
 
-        <main className="app-scroll px-4">
-          <div ref={sentinelRef} aria-hidden className="h-px" />
-          {children}
+          <header
+            className={[
+              'app-header px-4 pt-2.5 pb-2.5 transition-colors duration-150',
+              scrolled ? 'border-b border-line' : 'border-b border-transparent',
+            ].join(' ')}
+          >
+            {header}
+          </header>
+
+          <div className="flex flex-1 flex-col px-4">{children}</div>
+
+          <div className="app-bar border-t border-line px-4 pt-2.5 pb-2.5">{bar}</div>
         </main>
-
-        <div className="app-bar z-10 border-t border-line bg-surface px-4 pt-2.5 pb-2.5">
-          {bar}
-        </div>
       </div>
     </div>
   )
