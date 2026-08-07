@@ -189,6 +189,46 @@ async function analyze(request: Extract<WorkerRequest, { type: 'analyze' }>): Pr
     [timings.buffer])
 }
 
+/**
+ * One window, scored.
+ *
+ * Deliberately built from the same three pieces the file path uses —
+ * `inferWindow`, `flatSigmoid`, `selectDetections` — rather than a parallel
+ * implementation. Live and file must agree, and the cheapest way to guarantee
+ * that is for there to be nothing to disagree about.
+ */
+async function analyzeWindow(
+  request: Extract<WorkerRequest, { type: 'analyze-window' }>,
+): Promise<void> {
+  if (!session) throw new Error('worker received analyze-window before init')
+  const { requestId, samples, offsetSamples, minConfidence, sensitivity } = request
+
+  const t0 = performance.now()
+  const logits = await inferWindow(session, samples)
+  const inferenceMs = performance.now() - t0
+
+  const scores = flatSigmoid(logits, sensitivity)
+  const picked = selectDetections(
+    scores,
+    minConfidence,
+    request.allowedClasses,
+    request.topKPerWindow,
+  )
+
+  post(
+    {
+      type: 'window-result',
+      requestId,
+      offsetSamples,
+      classes: picked.classes,
+      scores: picked.scores,
+      inferenceMs,
+      truncated: picked.truncated,
+    },
+    [picked.classes.buffer, picked.scores.buffer],
+  )
+}
+
 self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
   const message = event.data
   try {
@@ -206,11 +246,14 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
       case 'geo':
         await geo(message)
         break
+      case 'analyze-window':
+        await analyzeWindow(message)
+        break
     }
   } catch (error) {
     post({
       type: 'error',
-      requestId: message.type === 'analyze' || message.type === 'geo' ? message.requestId : undefined,
+      requestId: 'requestId' in message ? message.requestId : undefined,
       message: error instanceof Error ? error.message : String(error),
     })
   }

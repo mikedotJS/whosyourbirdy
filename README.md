@@ -14,11 +14,9 @@ téléchargé une fois, mis en cache, et l'inférence tourne en WebAssembly dans
 
 ## État
 
-**P0, P1, P2 et P4 livrés**, plus la direction artistique et la coquille d'app installable : le
-pipeline, la preuve de parité numérique avec l'implémentation officielle, l'interface construite
-autour du spectrogramme, et le filtre géo-temporel de BirdNET.
-
-Reste **P3** (micro en direct).
+**P0 à P4 livrés**, plus la direction artistique et la coquille d'app installable : le pipeline, la
+preuve de parité numérique avec l'implémentation officielle, l'interface construite autour du
+spectrogramme, le filtre géo-temporel de BirdNET et l'écoute au micro en direct.
 
 > **Une limite connue dépasse le contrat de 1 × 10⁻³.** Sur la **dernière fenêtre** d'un fichier dont
 > la durée n'est pas un multiple de 3 s (donc zero-paddée), l'écart de score atteint 1,7 × 10⁻².
@@ -133,7 +131,7 @@ en git, ce qui a l'avantage d'être vérifiable :
 | Poids | les 13 shards TFJS associés (226 tenseurs nommés) |
 | **Référence de vérification** | `checkpoints/V2.4/BirdNET_GLOBAL_6K_V2.4_Model_FP32.tflite` |
 | Labels fr / en | `labels/V2.4/BirdNET_GLOBAL_6K_V2.4_Labels_{fr,en}.txt` (6 522 lignes) |
-| Modèle géo (MData, pour P4) | `checkpoints/V2.4/..._MData_Model_V2_FP16.tflite` — vérifié : `[1,3]` (lat, lon, semaine) → `[1,6522]`, ops triviales, aucune chirurgie nécessaire |
+| Modèle géo (MData, P4) | `checkpoints/V2.4/..._MData_Model_V2_FP16.tflite` — `[N,3]` (lat, lon, semaine) → `[N,6522]` **probabilités**, ops élémentaires uniquement, converti directement depuis le TFLite |
 | Fixture audio | `example/soundscape.wav` (120 s, mono, 48 kHz) |
 
 ### La seule modification apportée au graphe
@@ -439,6 +437,64 @@ barre de progression et le même cache que le modèle acoustique : une session q
 filtre ne le paie jamais. Il tourne dans le **même worker**, sur sa propre session — un second worker
 voudrait dire une seconde session acoustique de 52 Mo à côté, inutilisée.
 
+### L'écoute en direct (P3)
+
+**Pas de spectrogramme ici**, et c'est une décision, pas un oubli. Un spectrogramme défilant est un
+*instrument* : il sert à lire un enregistrement qu'on possède, avec une timeline qu'on peut scrubber
+et des occurrences qu'on peut revisiter. Écouter en direct, ce n'est pas lire, c'est **attendre**.
+L'écran est donc un objet vivant et une révélation, et le spectrogramme reste au mode fichier, pour
+lequel il a été conçu.
+
+**Les ondes sont pilotées par le RMS réel du micro** — cadence et taille suivent ce que l'appareil
+capte. C'est un vumètre déguisé, ce qui tient la règle du projet depuis P2 (rien ne bouge qui ne
+signifie) et rend visible sans une ligne de texte la panne la plus courante : si les ondes sont
+plates, le micro n'entend rien. Sous `prefers-reduced-motion`, il ne reste que l'anneau de niveau,
+qui suit toujours le RMS — le but de la préférence n'est pas qu'on ne vous dise plus rien.
+
+Une seule boucle rAF, et **elle s'arrête à l'arrêt de la capture**. C'est le défaut que la revue de
+P2 avait trouvé ; il n'est pas réintroduit. L'arrêt appelle aussi `track.stop()` : fermer
+l'`AudioContext` seul laisse le périphérique ouvert et le voyant d'enregistrement allumé.
+
+#### La capture
+
+`getUserMedia` avec **`echoCancellation`, `noiseSuppression` et `autoGainControl` explicitement à
+`false`**. Ce n'est pas du confort : ces traitements sont conçus pour la parole et détruiraient le
+chant — la suppression de bruit traite justement un signal tonal soutenu comme quelque chose à
+retirer. Et l'AGC est une **normalisation d'amplitude**, exactement ce que ce README interdit depuis
+P0, parce que le modèle normalise déjà chaque fenêtre lui-même.
+
+Le worklet est chargé depuis une **Blob URL construite d'une source inline** : `addModule()` est un
+fetch, pas un import, donc le bundler n'a pas son mot à dire. Après l'épisode `public/ort`, ne
+dépendre d'aucune résolution valait bien cette petite gymnastique. Il fait deux choses, parce que les
+échantillons sont déjà là : il **groupe** les blocs de 128 en paquets de 100 ms (375 messages/s
+deviennent 10) et il **calcule le RMS**. Il ne touche pas aux échantillons.
+
+Fenêtre de 3 s, **hop d'une seconde** : un oiseau qui chante maintenant est noté en ~3,1 s au lieu de
+6. Cela coûte trois inférences par seconde d'audio au lieu d'une, soit ~10 % d'un cœur aux ~100 ms
+par fenêtre mesurés. Si le modèle prend du retard, **la fenêtre la plus récente gagne** : ce qu'il
+est utile de noter, c'est ce qui se passe maintenant, pas un arriéré de dix secondes.
+
+#### La vérification qui compte
+
+On ne peut pas comparer une capture live à BirdNET : l'audio a existé une fois et n'existe plus. Ce
+qu'on peut prouver, c'est que **le chemin streaming et le chemin fichier sont le même calcul** — et
+c'est là tout le risque, puisque le modèle est identique et qu'une divergence serait donc un défaut
+de fenêtrage.
+
+Le niveau **F** pousse `soundscape.wav` dans `SlidingWindower` par blocs de 100 ms, exactement comme
+le worklet les livre, puis exige :
+
+1. que chaque fenêtre produite soit identique **échantillon par échantillon** à celle de
+   `sliceWindow` au même décalage ;
+2. que ses scores, passés par `analyzeWindow` (worker, transfert, sélection), soient **exactement
+   égaux** à ceux que `analyze` a rapportés pour cette fenêtre. Pas « à une tolérance près » : même
+   modèle, même machine, même processus — autre chose que l'égalité binaire serait un défaut, pas du
+   bruit.
+
+Résultat : 40 fenêtres, **0 différence d'échantillon**, 24 détections comparées, **0 score non
+bit-identique**. La dernière fenêtre zero-paddée du chemin fichier est exclue et comptée, pas
+silencieusement ignorée — un flux en direct n'a pas de fin.
+
 ### Clavier
 
 `espace` lecture/pause du segment sous la tête de lecture, `←/→` déplacent de 3 s (une fenêtre
@@ -519,12 +575,13 @@ et `pnpm dev` est vérifié de bout en bout : 24 détections, même première li
 
 ## Suite
 
-Reste **P3, le micro en direct**.
+Toutes les phases prévues sont livrées. Ce qui reste ouvert est listé dans
+[`docs/LIMITATIONS.md`](docs/LIMITATIONS.md).
 
 ## Structure
 
 ```
-src/lib/birdnet/     le pipeline (audio, fenêtrage, modèle, worker, sigmoïde, labels)
+src/lib/birdnet/     le pipeline (audio, fenêtrage, flux, modèle, worker, sigmoïde, labels, géo)
 scripts/             récupération des artefacts, conversion ONNX, parité, bench
 public/models/       poids + labels + LICENSE (générés, non versionnés)
 ```

@@ -188,6 +188,65 @@ export class BirdNetAnalyzer {
     })
   }
 
+  /**
+   * Score one live window.
+   *
+   * The streaming counterpart of `analyze`, and deliberately thin: it hands the
+   * window straight to the worker, which runs it through the same `inferWindow`,
+   * `flatSigmoid` and `selectDetections` the file path uses. Parity level F
+   * requires the two to produce *exactly* the same logits for the same samples,
+   * so there must be nothing here for them to disagree about.
+   *
+   * `samples` is transferred, not copied — the caller must not touch it after.
+   */
+  async analyzeWindow(
+    samples: Float32Array,
+    offsetSamples: number,
+    options: { minConfidence?: number; sensitivity?: number; allowedClasses?: Int32Array | null } = {},
+  ): Promise<{ classes: Int32Array; scores: Float32Array; inferenceMs: number; truncated: boolean }> {
+    const worker = this.ensureWorker()
+    await this.prepare()
+    const requestId = this.nextRequestId++
+
+    return new Promise((resolve, reject) => {
+      this.pending.set(requestId, reject)
+      const cleanup = () => {
+        this.pending.delete(requestId)
+        worker.removeEventListener('message', onMessage)
+      }
+      const onMessage = (event: MessageEvent<WorkerResponse>) => {
+        const message = event.data
+        if ('requestId' in message && message.requestId !== requestId) return
+        if (message.type === 'window-result') {
+          cleanup()
+          resolve({
+            classes: message.classes,
+            scores: message.scores,
+            inferenceMs: message.inferenceMs,
+            truncated: message.truncated,
+          })
+        } else if (message.type === 'error') {
+          cleanup()
+          reject(new Error(message.message))
+        }
+      }
+      worker.addEventListener('message', onMessage)
+      worker.postMessage(
+        {
+          type: 'analyze-window',
+          requestId,
+          samples,
+          offsetSamples,
+          minConfidence: options.minConfidence ?? DEFAULT_MIN_CONFIDENCE,
+          sensitivity: options.sensitivity ?? DEFAULT_SENSITIVITY,
+          allowedClasses: options.allowedClasses ?? null,
+          topKPerWindow: TOP_K_PER_WINDOW,
+        } satisfies WorkerRequest,
+        [samples.buffer],
+      )
+    })
+  }
+
   private run(
     audio: DecodedAudio,
     labels: Species[],

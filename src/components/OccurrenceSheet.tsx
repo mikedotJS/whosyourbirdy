@@ -7,6 +7,12 @@ interface Props {
   playing: number | null
   onClose: () => void
   onPlay: (detection: Detection) => void
+  /**
+   * False in live mode: there is no recording to replay, so the times are shown
+   * as facts rather than as buttons that would do nothing. Offering a dead
+   * control is worse than not offering one.
+   */
+  playable?: boolean
 }
 
 /**
@@ -18,7 +24,7 @@ interface Props {
  * — the spectrogram above it stays visible with this species' bands lit, which
  * is the whole point of selecting one.
  */
-export function OccurrenceSheet({ group, playing, onClose, onPlay }: Props) {
+export function OccurrenceSheet({ group, playing, onClose, onPlay, playable = true }: Props) {
   return (
     <Sheet
       open={group !== null}
@@ -41,6 +47,17 @@ export function OccurrenceSheet({ group, playing, onClose, onPlay }: Props) {
             {group.occurrences.map((occurrence) => {
               const key = occurrence.windowIndex * 10000 + occurrence.species.index
               const isPlaying = playing === key
+              if (!playable) {
+                return (
+                  <li
+                    key={key}
+                    className="flex min-h-11 w-full flex-col items-center justify-center rounded-xl border border-line bg-hover text-sm tabular-nums text-ink-2"
+                  >
+                    <span className="font-medium">{clock(occurrence.start)}</span>
+                    <span className="text-xs opacity-80">{occurrence.score.toFixed(2)}</span>
+                  </li>
+                )
+              }
               return (
                 <li key={key}>
                   <button
@@ -71,7 +88,9 @@ export function OccurrenceSheet({ group, playing, onClose, onPlay }: Props) {
             })}
           </ul>
           <p className="mt-3 text-xs text-ink-3">
-            Chaque segment dure 3 secondes — exactement la fenêtre que le modèle a notée.
+            {playable
+              ? 'Chaque segment dure 3 secondes — exactement la fenêtre que le modèle a notée.'
+              : "Temps écoulé depuis le début de l'écoute. Rien n'est enregistré, il n'y a donc rien à réécouter."}
           </p>
         </>
       )}

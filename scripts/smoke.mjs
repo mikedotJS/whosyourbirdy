@@ -156,6 +156,14 @@ async function main() {
   const browser = await chromium.launch({
     executablePath: existsSync(CHROMIUM) ? CHROMIUM : undefined,
     headless: !process.argv.includes('--headed'),
+    // A fake capture device fed from the reference fixture, so live listening
+    // can be driven end to end. `--use-fake-ui-for-media-stream` accepts the
+    // permission prompt; nothing else in the suite touches getUserMedia.
+    args: [
+      '--use-fake-ui-for-media-stream',
+      '--use-fake-device-for-media-stream',
+      `--use-file-for-fake-audio-capture=${FIXTURE}`,
+    ],
   })
 
   const problems = []
@@ -620,6 +628,100 @@ async function main() {
       'reset mid-analysis leaves the drop zone and nothing else',
       /Choisir un enregistrement/.test(afterReset) && (await page.locator(ROWS).count()) === 0,
       afterReset.split('\n').slice(0, 2).join(' | '),
+    )
+
+    // ---- live listening ----------------------------------------------------
+    // Driven by a fake device playing the same fixture, so the species that come
+    // out are checkable rather than "some rows appeared".
+    await page.click('text=Micro')
+    await page.waitForTimeout(300)
+
+    // Instrument the real thing that must happen on stop. Counting calls to
+    // `MediaStreamTrack.stop` proves the device is released, which closing the
+    // AudioContext alone would not do — the recording indicator would stay lit.
+    await page.evaluate(() => {
+      const proto = MediaStreamTrack.prototype
+      const original = proto.stop
+      window.__trackStops = 0
+      proto.stop = function (...args) {
+        window.__trackStops++
+        return original.apply(this, args)
+      }
+    })
+
+    await page.click('[aria-label="Écouter le micro"]')
+    await page.waitForSelector('[aria-label="Arrêter l\'écoute"]', { timeout: 300_000 })
+    await page.waitForTimeout(1500)
+
+    const liveDraws = await page.evaluate(
+      () =>
+        new Promise((resolve) => {
+          const proto = CanvasRenderingContext2D.prototype
+          const original = proto.clearRect
+          let n = 0
+          proto.clearRect = function (...args) {
+            n++
+            return original.apply(this, args)
+          }
+          setTimeout(() => {
+            proto.clearRect = original
+            resolve(n)
+          }, 1200)
+        }),
+    )
+    check(
+      // Low bar on purpose: the failure this catches is a loop that never runs
+      // at all, and a headless browser under load does not hold 60 fps.
+      'the rings animate while listening',
+      liveDraws > 10,
+      `${liveDraws} repaints in 1.2 s`,
+    )
+
+    await page.waitForTimeout(30_000)
+    await page.screenshot({ path: join(shotsDir, '10-live.png'), fullPage: true })
+
+    const liveRows = (await page.locator(ROWS).allInnerTexts()).map((t) => t.split('\n')[0].trim())
+    const windowsText = await page.locator('.app-bar').innerText()
+    const windowCount = Number(windowsText.match(/(\d+)\s+fenêtre/)?.[1] ?? 0)
+    check(
+      'live listening streams detections from the fixture',
+      liveRows.length >= 3 && liveRows.includes(GOLDEN.top.common),
+      `${liveRows.length} species, incl. ${GOLDEN.top.common}: ${liveRows.includes(GOLDEN.top.common)}`,
+    )
+    // 3 s windows hopping every second: about one window per second of audio.
+    check(
+      'windows advance at the live hop, not the file hop',
+      windowCount >= 25 && windowCount <= 45,
+      `${windowCount} windows in ~32 s of listening`,
+    )
+
+    await page.click('[aria-label="Arrêter l\'écoute"]')
+    await page.waitForTimeout(500)
+    const stoppedDraws = await page.evaluate(
+      () =>
+        new Promise((resolve) => {
+          const proto = CanvasRenderingContext2D.prototype
+          const original = proto.clearRect
+          let n = 0
+          proto.clearRect = function (...args) {
+            n++
+            return original.apply(this, args)
+          }
+          setTimeout(() => {
+            proto.clearRect = original
+            resolve(n)
+          }, 1200)
+        }),
+    )
+    check(
+      'the animation loop stops when capture stops',
+      stoppedDraws < 5,
+      `${stoppedDraws} repaints in 1.2 s after stopping`,
+    )
+    check(
+      'stopping releases the microphone, not just the loop',
+      (await page.evaluate(() => window.__trackStops)) > 0,
+      `${await page.evaluate(() => window.__trackStops)} track.stop() calls`,
     )
 
     // ---- installable, and usable with the network off ----------------------

@@ -95,6 +95,21 @@ export type WorkerRequest =
    * first use — a session that never turns the filter on never pays for it.
    */
   | { type: 'geo'; requestId: number; latitude: number; longitude: number; week: number }
+  /**
+   * Score exactly one window. Live listening's unit of work: there is no file to
+   * plan over, so the caller hands over windows as the stream completes them.
+   */
+  | {
+      type: 'analyze-window'
+      requestId: number
+      samples: Float32Array
+      /** Stream offset of the window's first sample, echoed back untouched. */
+      offsetSamples: number
+      minConfidence: number
+      sensitivity: number
+      allowedClasses: Int32Array | null
+      topKPerWindow: number
+    }
 
 /** Messages the worker emits. */
 export type WorkerResponse =
@@ -140,4 +155,13 @@ export type WorkerResponse =
   | { type: 'geo-progress'; requestId: number; progress: ModelLoadProgress }
   /** One probability per class, already in [0, 1] — this model has its own sigmoid. */
   | { type: 'geo-scores'; requestId: number; scores: Float32Array }
+  | {
+      type: 'window-result'
+      requestId: number
+      offsetSamples: number
+      classes: Int32Array
+      scores: Float32Array
+      inferenceMs: number
+      truncated: boolean
+    }
   | { type: 'error'; requestId?: number; message: string }

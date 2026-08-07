@@ -95,7 +95,12 @@ export function useBirdNet() {
    */
   const [analyzer, setAnalyzer] = useState<BirdNetAnalyzer | null>(null)
 
+  // Created on mount, not on first analysis: constructing it is free — the
+  // worker is only spawned on the first request — and live listening needs an
+  // instance before any file has been opened.
   useEffect(() => {
+    analyzerRef.current ??= new BirdNetAnalyzer()
+    setAnalyzer(analyzerRef.current)
     return () => {
       runIdRef.current++
       abortRef.current?.abort()
@@ -113,10 +118,7 @@ export function useBirdNet() {
     const abort = new AbortController()
     abortRef.current = abort
 
-    if (!analyzerRef.current) {
-      analyzerRef.current = new BirdNetAnalyzer()
-      setAnalyzer(analyzerRef.current)
-    }
+    analyzerRef.current ??= new BirdNetAnalyzer()
     const analyzer = analyzerRef.current
 
     // Skip the "downloading" phase when the model is already resident, otherwise

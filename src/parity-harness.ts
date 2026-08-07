@@ -19,9 +19,11 @@
 import { decodeAudio } from './lib/birdnet/audio'
 import { inferWindow, loadModel } from './lib/birdnet/model'
 import { planWindows, sliceWindow } from './lib/birdnet/windows'
+import { SlidingWindower } from './lib/birdnet/stream'
+import { WORKLET_BATCH_SAMPLES } from './lib/birdnet/worklet'
 import { flatSigmoid } from './lib/birdnet/sigmoid'
 import { BirdNetAnalyzer } from './lib/birdnet/analyze'
-import { DEFAULT_MIN_CONFIDENCE, N_CLASSES } from './lib/birdnet/constants'
+import { DEFAULT_MIN_CONFIDENCE, N_CLASSES, WINDOW_SAMPLES } from './lib/birdnet/constants'
 import { isNonEvent, loadLabels } from './lib/birdnet/labels'
 
 interface ParityOutput {
@@ -41,6 +43,17 @@ interface ParityOutput {
   }
 }
 
+interface StreamParityOutput {
+  streamedWindows: number
+  plannedWindows: number
+  paddedWindowsSkipped: number
+  sampleMismatches: number
+  firstMismatchAt: number
+  detectionsCompared: number
+  scoreMismatches: number
+  worstDelta: number
+}
+
 interface BenchOutput {
   timings: number[]
   median: number
@@ -51,6 +64,7 @@ interface BenchOutput {
 declare global {
   interface Window {
     runParity: (audioUrl: string, expectedWindows: number, classes: number) => Promise<ParityOutput>
+    runStreamParity: (audioUrl: string) => Promise<StreamParityOutput>
     benchmark: (audioUrl: string) => Promise<BenchOutput>
   }
 }
@@ -143,6 +157,116 @@ window.runParity = async (audioUrl, expectedWindows, classes) => {
       analyzerDrift,
       analyzerMismatches,
     },
+  }
+}
+
+/**
+ * Level F: the streaming path against the file path.
+ *
+ * Live listening cannot be compared to BirdNET — there is no reference for audio
+ * that only existed once. What *can* be proved is that the streaming path and
+ * the file path are the same computation, and that is the whole risk: the model
+ * is identical, so any divergence is a windowing bug.
+ *
+ * The file is pushed through `SlidingWindower` in 100 ms blocks, exactly as the
+ * audio worklet delivers them, with the hop set to a full window so the stream's
+ * windows land on the same offsets `planWindows` produces. Then:
+ *
+ *   1. every streamed window is compared **sample for sample** against
+ *      `sliceWindow` at the same offset — this is the windowing proof;
+ *   2. every streamed window is scored through `analyzeWindow` (worker,
+ *      transfer, `selectDetections`) and its scores are required to be **exactly
+ *      equal** to what `analyze` reported for that window. Not "within a
+ *      tolerance": same model, same machine, same process, so anything other
+ *      than bit equality is a defect rather than noise.
+ *
+ * The file path's final window is zero-padded and has no streaming counterpart —
+ * a live stream has no end — so it is excluded and counted, not quietly skipped.
+ */
+window.runStreamParity = async (audioUrl) => {
+  const bytes = await (await fetch(audioUrl)).arrayBuffer()
+  const audio = await decodeAudio(bytes.slice(0))
+
+  const planned = planWindows(audio.samples.length, 0)
+  const windower = new SlidingWindower(WINDOW_SAMPLES, WINDOW_SAMPLES)
+
+  const streamed: { samples: Float32Array; offset: number }[] = []
+  for (let read = 0; read < audio.samples.length; read += WORKLET_BATCH_SAMPLES) {
+    const block = audio.samples.subarray(read, Math.min(read + WORKLET_BATCH_SAMPLES, audio.samples.length))
+    streamed.push(...windower.push(block))
+  }
+
+  // 1. The windows themselves.
+  let sampleMismatches = 0
+  let firstMismatchAt = -1
+  for (const [i, window] of streamed.entries()) {
+    if (window.offset !== planned[i]?.offsetSamples) {
+      sampleMismatches++
+      if (firstMismatchAt < 0) firstMismatchAt = i
+      continue
+    }
+    const reference = sliceWindow(audio.samples, window.offset)
+    for (let s = 0; s < WINDOW_SAMPLES; s++) {
+      if (window.samples[s] !== reference[s]) {
+        sampleMismatches++
+        if (firstMismatchAt < 0) firstMismatchAt = i
+        break
+      }
+    }
+  }
+
+  // 2. The scores, through both code paths.
+  const analyzer = new BirdNetAnalyzer()
+  const labels = await loadLabels('en')
+  const allowedClasses = Int32Array.from(labels.filter((s) => !isNonEvent(s)).map((s) => s.index))
+
+  const fileResult = await analyzer.analyze(bytes.slice(0), {
+    overlap: 0,
+    minConfidence: DEFAULT_MIN_CONFIDENCE,
+    locale: 'en',
+  })
+  const byWindow = new Map<number, Map<number, number>>()
+  for (const detection of fileResult.detections) {
+    let bucket = byWindow.get(detection.windowIndex)
+    if (!bucket) byWindow.set(detection.windowIndex, (bucket = new Map()))
+    bucket.set(detection.species.index, detection.score)
+  }
+
+  let scoreMismatches = 0
+  let worstDelta = 0
+  let compared = 0
+  for (const [i, window] of streamed.entries()) {
+    const result = await analyzer.analyzeWindow(window.samples, window.offset, {
+      minConfidence: DEFAULT_MIN_CONFIDENCE,
+      allowedClasses,
+    })
+    const expected = byWindow.get(i) ?? new Map<number, number>()
+    if (result.classes.length !== expected.size) scoreMismatches++
+    for (let k = 0; k < result.classes.length; k++) {
+      compared++
+      const want = expected.get(result.classes[k])
+      if (want === undefined) {
+        scoreMismatches++
+        continue
+      }
+      // Exact, not approximate. See the note above.
+      const delta = Math.abs(want - result.scores[k])
+      if (delta > worstDelta) worstDelta = delta
+      if (result.scores[k] !== want) scoreMismatches++
+    }
+  }
+  analyzer.dispose()
+
+  return {
+    streamedWindows: streamed.length,
+    plannedWindows: planned.length,
+    /** Windows the file path pads and the stream never sees. Expected: 0 or 1. */
+    paddedWindowsSkipped: planned.length - streamed.length,
+    sampleMismatches,
+    firstMismatchAt,
+    detectionsCompared: compared,
+    scoreMismatches,
+    worstDelta,
   }
 }
 

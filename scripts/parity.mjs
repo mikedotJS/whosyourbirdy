@@ -275,6 +275,38 @@ function serveStatic(port) {
   return new Promise((resolve) => server.listen(port, () => resolve(server)))
 }
 
+/**
+ * Level F: the streaming path against the file path, both in one browser.
+ *
+ * There is no external reference for live audio — it existed once and is gone.
+ * What can be proved is that streaming and file are the *same computation*, so
+ * the contract is bit equality rather than a tolerance: same model, same
+ * machine, same process.
+ */
+async function levelStream() {
+  const server = await serveStatic(0)
+  const port = server.address().port
+  const browser = await chromium.launch(launchOptions)
+  try {
+    const page = await browser.newPage()
+    page.on('console', (m) => {
+      if (m.type() === 'error') process.stderr.write(dim(`    [browser] ${m.text()}\n`))
+    })
+    await page.goto(`http://127.0.0.1:${port}/parity-harness.html`)
+    const out = await page.evaluate((url) => window.runStreamParity(url), '/soundscape.wav', {
+      timeout: 600_000,
+    })
+    process.stdout.write(
+      dim(`    ${out.streamedWindows} streamed / ${out.plannedWindows} planned windows, ` +
+        `${out.detectionsCompared} detections compared\n`),
+    )
+    return out
+  } finally {
+    await browser.close()
+    server.close()
+  }
+}
+
 async function levelBrowser(label, reference, audioFile, expectFail) {
   const server = await serveStatic(0)
   const port = server.address().port
@@ -464,6 +496,22 @@ sf.write(sys.argv[2], r, 44100, subtype='PCM_16')`,
         `max|Δp|=${(geoSummary.maxScore ?? NaN).toExponential(3)} over ${geoSummary.cases ?? '?'} ` +
         `(place, week) pairs, species crossing 0.03 differently: ${geoSummary.disagreements ?? '?'}, ` +
         `week convention ${geoSummary.weekConvention ? 'ok' : 'WRONG'}`,
+    })
+
+    console.log(bold('\n  level F — streaming path vs file path (same browser, same session)'))
+    const stream = await levelStream()
+    results.push({
+      name: 'F  live windowing (streaming vs file, exact equality required)',
+      ok:
+        stream.sampleMismatches === 0 &&
+        stream.scoreMismatches === 0 &&
+        stream.paddedWindowsSkipped <= 1 &&
+        stream.streamedWindows > 0,
+      detail:
+        `${stream.streamedWindows} streamed windows, ${stream.sampleMismatches} differing sample-for-sample; ` +
+        `${stream.detectionsCompared} detections compared, ${stream.scoreMismatches} not bit-identical ` +
+        `(worst Δ ${stream.worstDelta.toExponential(3)}); ` +
+        `${stream.paddedWindowsSkipped} zero-padded window skipped — a live stream has no end`,
     })
   }
 
