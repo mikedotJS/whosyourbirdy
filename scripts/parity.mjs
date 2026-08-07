@@ -26,6 +26,13 @@
  * Levels A and B must pass. Level C is reported, and only fails if the drift is
  * large enough to change which species get reported.
  *
+ *   E. Geo-temporal filter. Our MData ONNX against the official MData TFLite,
+ *      over a grid of places and weeks plus a randomised sweep. Nothing sits
+ *      between the inputs and the model here, so anything it finds is the
+ *      conversion. It also re-derives BirdNET's 1-48 week convention from dates,
+ *      because using ISO weeks instead would shift the season by up to a month
+ *      and produce a plausible, wrong answer rather than an error.
+ *
  *   D. Degenerate inputs. Silence, DC, clipping, pure tones -- fed straight to
  *      both implementations. These are where the mel front-end is most fragile,
  *      and a zero-padded tail makes the all-silent case unavoidable in practice.
@@ -444,6 +451,19 @@ sf.write(sys.argv[2], r, 44100, subtype='PCM_16')`,
       detail:
         `max|Δscore|=${(summary.maxScore ?? NaN).toExponential(3)} ` +
         `detections differing at 0.25: ${summary.disagreements ?? '?'}`,
+    })
+
+    console.log(bold('\n  level E — geo-temporal model (ONNX vs official MData TFLite)'))
+    const geoProc = spawnSync(VENV, ['scripts/parity_geo.py'], { cwd: ROOT, encoding: 'utf8' })
+    process.stdout.write(dim(geoProc.stdout ?? ''))
+    const geoSummary = JSON.parse((geoProc.stderr ?? '{}').trim().split('\n').pop() || '{}')
+    results.push({
+      name: 'E  geo-temporal filter (ONNX vs official TFLite, no audio chain)',
+      ok: geoProc.status === 0,
+      detail:
+        `max|Δp|=${(geoSummary.maxScore ?? NaN).toExponential(3)} over ${geoSummary.cases ?? '?'} ` +
+        `(place, week) pairs, species crossing 0.03 differently: ${geoSummary.disagreements ?? '?'}, ` +
+        `week convention ${geoSummary.weekConvention ? 'ok' : 'WRONG'}`,
     })
   }
 

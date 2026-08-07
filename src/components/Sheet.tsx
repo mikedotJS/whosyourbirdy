@@ -72,6 +72,11 @@ export function Sheet({ open, onClose, title, aside, children }: Props) {
   )
 
   const onPointerDown = (event: React.PointerEvent) => {
+    // The whole header is the grab area, and it can also hold a control — the
+    // geo sheet puts its on/off switch there. Capturing the pointer swallows
+    // that control's click entirely, so a drag must not start on one. Found by
+    // a checkbox that reported "clicking did not change its state".
+    if ((event.target as HTMLElement).closest('button, input, a, select, textarea, label')) return
     event.currentTarget.setPointerCapture(event.pointerId)
     dragRef.current = { id: event.pointerId, y0: event.clientY, t0: event.timeStamp, dy: 0 }
     ref.current?.classList.remove('sheet-settling')

@@ -138,6 +138,56 @@ export class BirdNetAnalyzer {
     }, callbacks)
   }
 
+  /**
+   * Score every class for a place and a week, with the geo-temporal model.
+   *
+   * Runs in the same worker as the acoustic model — one ORT configuration, one
+   * place where WASM paths and thread counts are set — but on its own session,
+   * loaded on first call. A user who never opens the filter never downloads it.
+   *
+   * The result is a probability per class, already sigmoided by the model
+   * itself. Do not pass it through `flatSigmoid`.
+   */
+  async geoScores(
+    latitude: number,
+    longitude: number,
+    week: number,
+    onProgress?: (progress: ModelLoadProgress) => void,
+  ): Promise<Float32Array> {
+    const worker = this.ensureWorker()
+    await this.prepare()
+    const requestId = this.nextRequestId++
+
+    return new Promise<Float32Array>((resolve, reject) => {
+      this.pending.set(requestId, reject)
+      const cleanup = () => {
+        this.pending.delete(requestId)
+        worker.removeEventListener('message', onMessage)
+      }
+      const onMessage = (event: MessageEvent<WorkerResponse>) => {
+        const message = event.data
+        if ('requestId' in message && message.requestId !== requestId) return
+        if (message.type === 'geo-progress') {
+          onProgress?.(message.progress)
+        } else if (message.type === 'geo-scores') {
+          cleanup()
+          resolve(message.scores)
+        } else if (message.type === 'error') {
+          cleanup()
+          reject(new Error(message.message))
+        }
+      }
+      worker.addEventListener('message', onMessage)
+      worker.postMessage({
+        type: 'geo',
+        requestId,
+        latitude,
+        longitude,
+        week,
+      } satisfies WorkerRequest)
+    })
+  }
+
   private run(
     audio: DecodedAudio,
     labels: Species[],

@@ -54,6 +54,35 @@ TOL_ONNX_TFLITE = 5e-3   # exported ONNX vs official TFLite, on logits
 TOL_SCORE = 1e-3         # anything, after the sigmoid -- the number that matters
 
 
+# The geo model's own file, and the checks that gate it. It is a different animal
+# from the acoustic one: elementary ops only, and it ends in its own LOGISTIC, so
+# it emits probabilities directly rather than logits.
+MDATA_TFLITE = "BirdNET_GLOBAL_6K_V2.4_MData_Model_V2_FP16.tflite"
+TOL_MDATA = 1e-3         # our ONNX vs the official MData TFLite, on probabilities
+SF_THRESH = 0.03         # BirdNET-Analyzer's default (analyze/core.py)
+
+# A replayable sanity check, not a tolerance: if the geo model ever stops saying
+# these four are near-certain in Paris in late May, the export is wrong in a way
+# no numeric tolerance would catch.
+PARIS_WEEK_20_TOP4 = [
+    ("Turdus merula", 0.999),
+    ("Corvus corone", 0.995),
+    ("Columba palumbus", 0.992),
+    ("Fringilla coelebs", 0.973),
+]
+
+# Coordinates and weeks the export is checked over. Four continents and the whole
+# year, because a model of *where and when* is exactly the kind of thing that can
+# be right in one hemisphere and wrong in the other.
+GEO_GRID_PLACES = {
+    "Paris": (48.85, 2.35),
+    "New York": (40.71, -74.01),
+    "Nairobi": (-1.29, 36.82),
+    "Sydney": (-33.87, 151.21),
+}
+GEO_GRID_WEEKS = [-1, 1, 12, 20, 24, 36, 48]
+
+
 def log(msg: str) -> None:
     print(msg, flush=True)
 
@@ -222,6 +251,159 @@ def report(name: str, a: np.ndarray, b: np.ndarray, tol: float) -> bool:
 
 
 # --------------------------------------------------------------------------- #
+# the geo model
+# --------------------------------------------------------------------------- #
+
+def rename_io(proto, in_name: str = "input", out_name: str = "output"):
+    """Give the graph a stable IO contract the TypeScript side can rely on.
+
+    Renaming an ONNX tensor means rewriting every reference to it, not only the
+    graph's own input/output entries — the first version of this in the acoustic
+    export was a no-op stub that appeared to work because the old names still
+    resolved.
+    """
+    if len(proto.graph.input) != 1 or len(proto.graph.output) != 1:
+        raise SystemExit(
+            f"expected one input and one output, got "
+            f"{len(proto.graph.input)}/{len(proto.graph.output)}"
+        )
+    rename = {proto.graph.input[0].name: in_name, proto.graph.output[0].name: out_name}
+    for node in proto.graph.node:
+        node.input[:] = [rename.get(n, n) for n in node.input]
+        node.output[:] = [rename.get(n, n) for n in node.output]
+    for value in list(proto.graph.value_info) + list(proto.graph.initializer):
+        value.name = rename.get(value.name, value.name)
+    proto.graph.input[0].name = in_name
+    proto.graph.output[0].name = out_name
+    return proto
+
+
+def export_mdata(skip_checks: bool) -> tuple[bool, dict | None]:
+    """Convert the MData (geo-temporal) model and verify it.
+
+    Nothing here needs the acoustic model's precautions. That one had to have its
+    STFT+mel front-end folded into a convolution because tf2onnx cannot convert an
+    RFFT whose consumer is not `ComplexAbs`; this one is FULLY_CONNECTED, SIN, MUL,
+    ADD and SELECT_V2, so tf2onnx takes the TFLite file directly.
+
+    The other difference matters at the call site: the acoustic TFLite stops at
+    logits and needs BirdNET's flat sigmoid applied afterwards, while this one
+    ends in its own LOGISTIC op and emits probabilities. There is no sigmoid to
+    strip and none to add.
+    """
+    import onnx
+    import onnxruntime as ort
+    import tensorflow as tf
+    import tf2onnx
+
+    tflite_path = CACHE / MDATA_TFLITE
+    if not tflite_path.exists():
+        log(f"  FAIL {MDATA_TFLITE} is missing — run scripts/fetch_artifacts.py")
+        return False, None
+
+    log("[7/9] converting the MData geo model straight from TFLite")
+    proto, _ = tf2onnx.convert.from_tflite(str(tflite_path), opset=OPSET)
+    proto = rename_io(proto)
+    onnx.checker.check_model(proto)
+
+    # Converting from TFLite leaves the batch dimension symbolic (a `dim_param`,
+    # which reads back as dim_value 0), unlike the Keras path where we pin it with
+    # an input signature. That is fine — the app always feeds one row — but the
+    # check has to be written for the shape that is actually there rather than
+    # the one the acoustic export happens to have.
+    def shape_of(value):
+        return [
+            d.dim_value if d.HasField("dim_value") else d.dim_param
+            for d in value.type.tensor_type.shape.dim
+        ]
+
+    def is_batched(shape, tail):
+        return len(shape) == len(tail) + 1 and list(shape[1:]) == tail and (
+            shape[0] in (0, 1) or isinstance(shape[0], str)
+        )
+
+    gi, go = proto.graph.input[0], proto.graph.output[0]
+    ishape, oshape = shape_of(gi), shape_of(go)
+    if not is_batched(ishape, [3]) or not is_batched(oshape, [N_CLASSES]):
+        log(f"  FAIL signature is {ishape} -> {oshape}, expected [N, 3] -> [N, {N_CLASSES}]")
+        return False, None
+    log(f"  PASS signature input{ishape} -> output{oshape} float32 (probabilities)")
+
+    path = OUT / "birdnet_v2.4_mdata.onnx"
+    onnx.save(proto, str(path))
+    log(f"  wrote {path.relative_to(ROOT)} ({path.stat().st_size / 1e6:.1f} MB)")
+
+    ok = True
+    if not skip_checks:
+        log("[8/9] checking the geo ONNX against the official MData TFLite")
+        lite = tf.lite.Interpreter(model_path=str(tflite_path))
+        lite.allocate_tensors()
+        lin, lout = lite.get_input_details()[0], lite.get_output_details()[0]
+
+        def tflite_probs(x):
+            lite.set_tensor(lin["index"], x.reshape(1, 3).astype(np.float32))
+            lite.invoke()
+            return lite.get_tensor(lout["index"])[0]
+
+        sess = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+
+        def onnx_probs(x):
+            return sess.run(["output"], {"input": x.reshape(1, 3).astype(np.float32)})[0][0]
+
+        worst, worst_at, disagreements = 0.0, "", 0
+        for name, (lat, lon) in GEO_GRID_PLACES.items():
+            for week in GEO_GRID_WEEKS:
+                x = np.array([lat, lon, week], np.float32)
+                a, b = tflite_probs(x), onnx_probs(x)
+                delta = float(np.abs(a - b).max())
+                if delta > worst:
+                    worst, worst_at = delta, f"{name} week {week}"
+                # The number that actually decides anything: whether a species is
+                # kept or dropped at BirdNET's own species-filter threshold.
+                disagreements += int(((a >= SF_THRESH) != (b >= SF_THRESH)).sum())
+
+        pairs = len(GEO_GRID_PLACES) * len(GEO_GRID_WEEKS)
+        if worst > TOL_MDATA or disagreements:
+            log(f"  FAIL max |delta| {worst:.3e} at {worst_at}, "
+                f"{disagreements} species disagreements at {SF_THRESH}")
+            ok = False
+        else:
+            log(f"  PASS max |delta| {worst:.3e} over {pairs} (place, week) pairs, "
+                f"0 species disagreements at {SF_THRESH}")
+
+        log("[9/9] sanity-checking Paris in late May against known residents")
+        scientific = [
+            line.split("_")[0].strip()
+            for line in (CACHE / "labels_fr.txt").read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        probs = onnx_probs(np.array([48.85, 2.35, 20], np.float32))
+        for species, expected in PARIS_WEEK_20_TOP4:
+            index = scientific.index(species)
+            got = float(probs[index])
+            mark = "PASS" if abs(got - expected) <= 0.01 else "FAIL"
+            if mark == "FAIL":
+                ok = False
+            log(f"  {mark} {species:<22} {got:.3f} (expected ~{expected})")
+        log(f"       {int((probs >= SF_THRESH).sum())} of {N_CLASSES} species pass "
+            f"the filter at Paris, week 20")
+    else:
+        log("[8/9] [9/9] skipped (--skip-checks)")
+
+    return ok, {
+        "file": path.name,
+        "sha256": sha256(path),
+        "bytes": path.stat().st_size,
+        "inputs": "latitude, longitude, week (1-48, or -1 for the whole year)",
+        "output": "probabilities (no sigmoid to apply)",
+        "classes": N_CLASSES,
+        "opset": OPSET,
+        "defaultThreshold": SF_THRESH,
+        "verifiedAgainst": f"checkpoints/V2.4/{MDATA_TFLITE}",
+    }
+
+
+# --------------------------------------------------------------------------- #
 # main
 # --------------------------------------------------------------------------- #
 
@@ -238,15 +420,15 @@ def main() -> int:
     WORK.mkdir(parents=True, exist_ok=True)
     OUT.mkdir(parents=True, exist_ok=True)
 
-    log("[1/6] rebuilding the Keras model from the official topology + weights")
+    log("[1/9] rebuilding the Keras model from the official topology + weights")
     model = strip_final_sigmoid(build_keras("conv"))
 
     windows = probe_windows()
-    log(f"[2/6] probing with {len(windows)} real 3 s windows from soundscape.wav")
+    log(f"[2/9] probing with {len(windows)} real 3 s windows from soundscape.wav")
 
     ok = True
     if not args.skip_checks:
-        log("[3/6] checking the folded mel front-end against the literal STFT")
+        log("[3/9] checking the folded mel front-end against the literal STFT")
         literal = strip_final_sigmoid(build_keras("stft"))
         ok &= report("folded conv vs tf.signal.stft",
                      model.predict(windows, verbose=0),
@@ -254,35 +436,21 @@ def main() -> int:
                      TOL_FOLD)
         del literal
 
-        log("[4/6] checking the rebuilt model against the official FP32 TFLite")
+        log("[4/9] checking the rebuilt model against the official FP32 TFLite")
         reference = tflite_logits(windows)
         ok &= report("keras vs tflite", model.predict(windows, verbose=0), reference, TOL_KERAS_TFLITE)
     else:
         reference = None
-        log("[3/6] [4/6] skipped (--skip-checks)")
+        log("[3/9] [4/9] skipped (--skip-checks)")
 
-    log("[5/6] exporting to ONNX")
+    log("[5/9] exporting to ONNX")
     signature = (tf.TensorSpec((1, WINDOW_SAMPLES), tf.float32, name="input"),)
     proto, _ = tf2onnx.convert.from_keras(model, input_signature=signature, opset=OPSET)
 
-    # Normalise the IO names so the TypeScript side has a stable contract.
-    # tf2onnx derives them from the Keras layer names, which we do not want to
-    # leak into the app; renaming means rewriting every reference, not just the
-    # graph's own input/output entries.
-    if len(proto.graph.input) != 1 or len(proto.graph.output) != 1:
-        raise SystemExit(
-            f"expected exactly one input and one output, got "
-            f"{len(proto.graph.input)}/{len(proto.graph.output)}"
-        )
-    rename = {proto.graph.input[0].name: "input", proto.graph.output[0].name: "output"}
-    for node in proto.graph.node:
-        node.input[:] = [rename.get(name, name) for name in node.input]
-        node.output[:] = [rename.get(name, name) for name in node.output]
-    for value in list(proto.graph.value_info) + list(proto.graph.initializer):
-        value.name = rename.get(value.name, value.name)
-    proto.graph.input[0].name = "input"
-    proto.graph.output[0].name = "output"
-
+    # tf2onnx derives the IO names from the Keras layer names; the app should not
+    # have to know them. `rename_io` rewrites every reference, not only the
+    # graph's own entries.
+    proto = rename_io(proto)
     onnx.checker.check_model(proto)
 
     ops = {n.op_type for n in proto.graph.node}
@@ -308,14 +476,14 @@ def main() -> int:
     log(f"  wrote {model_path.relative_to(ROOT)} ({model_path.stat().st_size / 1e6:.1f} MB)")
 
     if not args.skip_checks:
-        log("[6/6] re-checking the exported ONNX through onnxruntime")
+        log("[6/9] re-checking the exported ONNX through onnxruntime")
         import onnxruntime as ort
 
         sess = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
         got = np.concatenate([sess.run(["output"], {"input": w[None, :]})[0] for w in windows])
         ok &= report("onnx vs tflite", got, reference, TOL_ONNX_TFLITE)
     else:
-        log("[6/6] skipped (--skip-checks)")
+        log("[6/9] skipped (--skip-checks)")
 
     # Labels and licence travel with the model.
     for src, dst in (("labels_fr.txt", "labels_fr.txt"), ("labels_en_us.txt", "labels_en.txt")):
@@ -345,8 +513,14 @@ def main() -> int:
         },
         "license": "CC BY-NC-SA 4.0",
     }
+
+    geo_ok, geo = export_mdata(args.skip_checks)
+    ok &= geo_ok
+    if geo:
+        manifest["geo"] = geo
+
     (OUT / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    log(f"  wrote labels_fr.txt, labels_en.txt, LICENSE, manifest.json")
+    log("  wrote labels_fr.txt, labels_en.txt, LICENSE, manifest.json")
 
     log("\nOK" if ok else "\nFAILED: the exported model does not match BirdNET; do not ship it.")
     return 0 if ok else 1

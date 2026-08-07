@@ -41,9 +41,25 @@ const GOLDEN = {
   top: { common: 'Mésange à tête noire', scientific: 'Poecile atricapillus', count: '2×', score: 0.81 },
 }
 
+/**
+ * The geo filter's expected effect on the reference fixture.
+ *
+ * `soundscape.wav` is a North American recording, and BirdNET reports a
+ * Chestnut-winged Cuckoo (*Clamator coromandus*) in it at 0.32 — an Asian
+ * species that cannot possibly be there. Filtering at New York in week 20 must
+ * remove exactly that kind of thing and leave the chickadee, which belongs.
+ */
+const GEO = {
+  newYork: [40.71, -74.01],
+  week: 20,
+  removed: 'Coucou à collier',
+  kept: 'Mésange à tête noire',
+  masked: 3,
+}
+
 const ROWS = '#species-list > li'
 /** Occurrences live in the bottom sheet, which is only open with a selection. */
-const CHIPS = 'dialog.sheet ul button'
+const CHIPS = 'dialog.sheet[open] ul button'
 /** Header, scrolling content and action bar. The status line is in the bar. */
 const PANEL = '.app-panel'
 
@@ -171,7 +187,7 @@ async function main() {
       progressText.split('\n').find((l) => /Téléchargement|Analyse|Décodage/.test(l)) ?? '',
     )
 
-    await page.waitForSelector('input[type=range]', { timeout: 600_000 })
+    await page.waitForSelector('#threshold', { timeout: 600_000 })
     await page.waitForTimeout(400)
     await page.screenshot({ path: join(shotsDir, '3-results.png'), fullPage: true })
 
@@ -265,10 +281,16 @@ async function main() {
     // A closed `<dialog>` is hidden by the browser's own `display: none`, which
     // a `display: flex` on the element outranks — that left an empty strip of
     // sheet parked over the action bar, invisible to every other assertion here.
-    check(
-      'the closed sheet takes no space',
-      !(await page.locator('dialog.sheet').isVisible()),
+    // Every sheet, not just the one we opened: there is more than one now, and
+    // the bug this catches — a `display` rule outranking the browser's own
+    // `display:none` for a closed dialog — would apply to all of them.
+    const ghosts = await page.evaluate(
+      () =>
+        [...document.querySelectorAll('dialog.sheet')].filter(
+          (d) => !d.open && getComputedStyle(d).display !== 'none',
+        ).length,
     )
+    check('a closed sheet takes no space', ghosts === 0, `${ghosts} closed sheets still displayed`)
 
     // Focus alone keeps a species highlighted — by design, for keyboard users —
     // so blur before measuring, or this compares the focused state with itself.
@@ -387,7 +409,7 @@ async function main() {
 
     // The slider must filter in memory, not re-run the model.
     const t0 = Date.now()
-    await page.locator('input[type=range]').fill('0.7')
+    await page.locator('#threshold').fill('0.7')
     await page.waitForTimeout(120)
     const high = await countDetections(page)
     const elapsed = Date.now() - t0
@@ -398,12 +420,12 @@ async function main() {
       `${GOLDEN.detections025} → ${high} detections in ${elapsed} ms`,
     )
 
-    await page.locator('input[type=range]').fill('0.05')
+    await page.locator('#threshold').fill('0.05')
     await page.waitForTimeout(150)
     const low = await countDetections(page)
     check('lowering the threshold reveals more', low === GOLDEN.detections005, `${low} at 0.05`)
 
-    await page.locator('input[type=range]').fill('0.25')
+    await page.locator('#threshold').fill('0.25')
     await page.waitForTimeout(120)
 
     // Assert on what a user perceives — the chip reporting itself as playing —
@@ -490,6 +512,73 @@ async function main() {
     )
     await page.screenshot({ path: join(shotsDir, '7-phone-scrolled.png') })
     await page.setViewportSize({ width: 900, height: 1100 })
+
+    // ---- the geo-temporal filter -------------------------------------------
+    // The fixture is a North American soundscape, and BirdNET finds a Chestnut-
+    // winged Cuckoo in it at 0.32 — an Asian species that cannot be there. That
+    // false positive is the reason this feature exists, so it is what the test
+    // asserts on, rather than "some number went down".
+    await page.click('text=Lieu et saison')
+    await page.waitForSelector('dialog.sheet[open] #geo-latitude')
+
+    // The week is pinned rather than left at today's, so the expected species
+    // set does not depend on the day the suite runs.
+    await page.fill('#geo-latitude', String(GEO.newYork[0]))
+    await page.fill('#geo-longitude', String(GEO.newYork[1]))
+    await page.locator('#geo-week').fill(String(GEO.week))
+    await page.locator('dialog.sheet[open] input[type=checkbox]').first().check()
+
+    // The switch lives in the sheet's header, which is also its drag handle.
+    // Capturing the pointer there once swallowed this click entirely.
+    check(
+      'the switch in the sheet header is clickable, not eaten by the drag handle',
+      await page.locator('dialog.sheet[open] input[type=checkbox]').first().isChecked(),
+    )
+
+    // 29 MB on first use, and it is not precached — give it room.
+    await page.waitForFunction(
+      () => !/calcul en cours|Téléchargement du modèle géographique/.test(document.body.innerText),
+      undefined,
+      { timeout: 300_000 },
+    )
+    await page.waitForTimeout(600)
+    await page.screenshot({ path: join(shotsDir, '9-geo.png') })
+    await page.keyboard.press('Escape')
+    await page.waitForTimeout(400)
+
+    const remaining = (await page.locator(ROWS).allInnerTexts()).map((t) => t.split('\n')[0].trim())
+    check(
+      'the geo filter removes the exotic false positive',
+      !remaining.includes(GEO.removed) && remaining.includes(GEO.kept),
+      `${remaining.length} species left; ${GEO.removed} gone: ${!remaining.includes(GEO.removed)}`,
+    )
+
+    // Removed is not the same as hidden: the species must still be reachable,
+    // with the score that removed it. A filter that makes a detection vanish
+    // without saying so is what this whole disclosure exists to prevent.
+    const maskedSummary = await page.locator('details summary').innerText()
+    await page.locator('details summary').click()
+    await page.waitForTimeout(200)
+    const maskedRows = await page.locator('details ul li').allInnerTexts()
+    check(
+      'the masked species stay reachable, with the geo score that removed them',
+      maskedRows.length === GEO.masked &&
+        maskedRows.some((r) => r.includes(GEO.removed) && /lieu 0\.\d{3}/.test(r)),
+      `${maskedSummary.trim()} — ${maskedRows.length} listed`,
+    )
+
+    // The week defaults to BirdNET's own convention: four per month, 1..48.
+    // An ISO week would be off by up to a month, worst exactly during migration.
+    await page.click('text=Lieu et saison')
+    await page.waitForSelector('dialog.sheet[open] #geo-week')
+    await page.locator('dialog.sheet[open] input[type=checkbox]').first().uncheck()
+    await page.keyboard.press('Escape')
+    await page.waitForTimeout(400)
+    check(
+      'disabling the filter restores every species',
+      (await page.locator(ROWS).count()) === GOLDEN.species025,
+      `${await page.locator(ROWS).count()} species`,
+    )
 
     // ---- regression: switching files mid-analysis -------------------------
     // A cancelled run used to finish anyway and write its results under the new

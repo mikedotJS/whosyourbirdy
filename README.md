@@ -14,12 +14,11 @@ téléchargé une fois, mis en cache, et l'inférence tourne en WebAssembly dans
 
 ## État
 
-**P0, P1 et P2 livrés** : le pipeline, la preuve de parité numérique avec l'implémentation
-officielle, et l'interface construite autour du spectrogramme — détections superposées en bandes
-temporelles, timeline scrubbable, regroupement par espèce avec occurrences, seuil de confiance
-réglable, lecture du segment au clic.
+**P0, P1, P2 et P4 livrés**, plus la direction artistique et la coquille d'app installable : le
+pipeline, la preuve de parité numérique avec l'implémentation officielle, l'interface construite
+autour du spectrogramme, et le filtre géo-temporel de BirdNET.
 
-Restent P3 (micro en direct) et P4 (filtre géo-temporel).
+Reste **P3** (micro en direct).
 
 > **Une limite connue dépasse le contrat de 1 × 10⁻³.** Sur la **dernière fenêtre** d'un fichier dont
 > la durée n'est pas un multiple de 3 s (donc zero-paddée), l'écart de score atteint 1,7 × 10⁻².
@@ -394,6 +393,52 @@ Ce que je ne peux pas vérifier ici : l'ajout à l'écran d'accueil sous **iOS S
 partie du manifeste. L'installabilité est vérifiée sous Chromium, et le smoke coupe le réseau puis
 recharge — la question utile n'est pas « un worker est-il enregistré » mais « l'app revient-elle ».
 
+### Le filtre géo-temporel (P4)
+
+BirdNET livre un second modèle, minuscule à côté de l'autre : **MData** prend latitude, longitude et
+semaine, et rend pour chacune des 6 522 classes la probabilité que l'espèce soit **là, à ce
+moment-là**. BirdNET-Analyzer s'en sert pour rayer du rapport les espèces invraisemblables.
+
+Deux faits ne se devinent pas, et ce sont eux qui font l'essentiel du travail :
+
+- **La semaine va de 1 à 48, pas de 1 à 52.** L'amont découpe chaque mois en quatre
+  (`birdnet/geo/inference/configs.py`). Passer un numéro de semaine ISO décalerait la saison de
+  jusqu'à un mois — au pire au printemps et à l'automne, exactement quand la migration fait changer
+  la réponse le plus vite. Le niveau E re-dérive la convention depuis des dates plutôt que de
+  comparer à une table, pour qu'on ne puisse pas la faire passer en recopiant la sortie du code.
+- **C'est un filtre dur, pas une pondération.** `invalid_mask = res < min_confidence`
+  (`birdnet/geo/inference/session.py`), au seuil `sf_thresh = 0,03` de `analyze/core.py`. Une espèce
+  sous le seuil est **retirée**, pas atténuée. La traiter comme un multiplicateur produirait un
+  rapport différent de celui de BirdNET pour les mêmes entrées.
+
+Troisième différence, au point d'appel : **ce modèle finit par sa propre sigmoïde** (dernier op
+`LOGISTIC`), alors que le modèle acoustique s'arrête aux logits. Ses sorties sont déjà des
+probabilités et ne doivent surtout pas repasser dans `flatSigmoid`.
+
+La conversion, elle, ne demande aucune des précautions du modèle acoustique : `FULLY_CONNECTED`,
+`SIN`, `MUL`, `ADD`, `SELECT_V2` — pas de FFT, donc `tf2onnx` avale le `.tflite` directement.
+
+**Ce que le filtre fait dans l'interface est le point de conception qui compte.** Il retire vraiment
+les espèces — sinon ce ne serait pas le comportement de BirdNET — mais il **dit lesquelles**. Un
+dépliant « N espèces masquées » les liste avec, côte à côte, le score qui les a trouvées et le score
+qui les a écartées :
+
+```
+Coucou à collier      Clamator coromandus      chant 0.32   lieu 0.000
+```
+
+Un filtre qui fait disparaître une détection en silence est exactement ce que le reste de ce projet
+refuse. Le filtre est aussi **facultatif et désactivable** : sans position, l'analyse reste celle de
+BirdNET sans filtre.
+
+La demande de géolocalisation n'est faite **qu'au clic** sur « utiliser ma position ». Rien ne
+réclame de position au chargement.
+
+Le modèle géo pèse **29 Mo** en fp32. Il n'est téléchargé qu'à l'activation du filtre, avec la même
+barre de progression et le même cache que le modèle acoustique : une session qui n'ouvre jamais le
+filtre ne le paie jamais. Il tourne dans le **même worker**, sur sa propre session — un second worker
+voudrait dire une seconde session acoustique de 52 Mo à côté, inutilisée.
+
 ### Clavier
 
 `espace` lecture/pause du segment sous la tête de lecture, `←/→` déplacent de 3 s (une fenêtre
@@ -474,18 +519,7 @@ et `pnpm dev` est vérifié de bout en bout : 24 détections, même première li
 
 ## Suite
 
-P2 spectrogramme + timeline · P3 micro en direct · P4 filtre géo-temporel.
-
-Le modèle géo de P4 est déjà récupéré et vérifié : entrée `[1, 3]` = latitude, longitude, semaine ;
-sortie `[1, 6522]` probabilités de présence. Contrôle de bon sens à Paris (48,85 / 2,35), semaine 20 :
-
-```
-Merle noir 0.999 · Corneille noire 0.995 · Pigeon ramier 0.992
-Pinson des arbres 0.973 · Hirondelle rustique 0.959 · Fauvette à tête noire 0.954
-```
-
-Il ne contient que des opérations élémentaires (pas de FFT) : sa conversion ne demandera aucune des
-précautions décrites plus haut, et P4 n'aura aucune dépendance réseau à débloquer.
+Reste **P3, le micro en direct**.
 
 ## Structure
 

@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useBirdNet } from './hooks/useBirdNet'
+import { useGeoFilter } from './hooks/useGeoFilter'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useSegmentPlayer } from './hooks/useSegmentPlayer'
 import { DEFAULT_MIN_CONFIDENCE, WINDOW_SECONDS } from './lib/birdnet/constants'
+import { describeWeek } from './lib/birdnet/geo'
 import type { Species } from './lib/birdnet/labels'
 import type { Detection } from './lib/birdnet/types'
 import { AppShell } from './components/AppShell'
 import { DropZone } from './components/DropZone'
+import { GeoSheet } from './components/GeoSheet'
 import { OccurrenceSheet } from './components/OccurrenceSheet'
 import { ProgressPanel } from './components/ProgressPanel'
 import { Spectrogram } from './components/Spectrogram'
@@ -23,7 +26,9 @@ export default function App() {
   const [pinned, setPinned] = useState<Species | null>(null)
   const [hovered, setHovered] = useState<Species | null>(null)
   const focused = pinned ?? hovered
-  const { state, analyze, reset, floor } = useBirdNet()
+  const { state, analyze, reset, analyzer, floor } = useBirdNet()
+  const geo = useGeoFilter(analyzer)
+  const [geoOpen, setGeoOpen] = useState(false)
   // One file input for the whole app, so the drop zone and the action bar open
   // the same picker and the element exists in every phase.
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -71,7 +76,7 @@ export default function App() {
     [state.detections, threshold],
   )
 
-  const groups = useMemo<SpeciesGroup[]>(() => {
+  const allGroups = useMemo<SpeciesGroup[]>(() => {
     const byIndex = new Map<number, SpeciesGroup>()
     for (const detection of visible) {
       const existing = byIndex.get(detection.species.index)
@@ -93,6 +98,35 @@ export default function App() {
     for (const group of result) group.occurrences.sort((a, b) => a.start - b.start)
     return result
   }, [visible])
+
+  /**
+   * The geo filter partitions the species; it does not silently shorten the list.
+   *
+   * BirdNET's own semantics are a hard cut — `invalid_mask = res < min_confidence`
+   * — so a filtered species really is out of the results, and the spectrogram and
+   * the counts have to agree with that. What this app adds is that the removed
+   * ones stay reachable, with the geo score that removed them. A filter that
+   * makes a detection disappear without saying so is exactly what the rest of
+   * this project refuses.
+   */
+  const { groups, maskedGroups } = useMemo(() => {
+    const mask = geo.settings.enabled ? geo.mask : null
+    if (!mask) return { groups: allGroups, maskedGroups: [] as SpeciesGroup[] }
+    const kept: SpeciesGroup[] = []
+    const removed: SpeciesGroup[] = []
+    for (const group of allGroups) {
+      (mask[group.species.index] ? kept : removed).push(group)
+    }
+    return { groups: kept, maskedGroups: removed }
+  }, [allGroups, geo.mask, geo.settings.enabled])
+
+  /**
+   * The detections that survive both filters, which is what the picture and the
+   * playback shortcut must agree with — a band lit over a species the geo filter
+   * removed would contradict the list right next to it.
+   */
+  const keptDetections = useMemo(() => groups.flatMap((g) => g.occurrences), [groups])
+  const visibleCount = keptDetections.length
 
   // A focused species the threshold has just filtered out would leave the
   // spectrogram highlighting nothing and the sheet describing nobody.
@@ -129,14 +163,14 @@ export default function App() {
       player.stop()
       return
     }
-    if (visible.length === 0) return
+    if (keptDetections.length === 0) return
     const at = player.positionRef.current ?? 0
-    const pool = focused ? visible.filter((d) => d.species.index === focused.index) : visible
+    const pool = focused ? keptDetections.filter((d) => d.species.index === focused.index) : keptDetections
     if (pool.length === 0) return
     const under = pool.find((d) => at >= d.start && at < d.start + WINDOW_SECONDS)
     const best = pool.reduce((a, b) => (b.score > a.score ? b : a), pool[0])
     playDetection(under ?? best)
-  }, [player, visible, focused, playDetection])
+  }, [player, keptDetections, focused, playDetection])
 
   const seekBy = useCallback(
     (delta: number) => {
@@ -165,7 +199,7 @@ export default function App() {
       : groups.length === 0
         ? 'Aucune détection à ce seuil'
         : `${groups.length} espèce${groups.length > 1 ? 's' : ''} · ` +
-          `${visible.length} détection${visible.length > 1 ? 's' : ''}`
+          `${visibleCount} détection${visibleCount > 1 ? 's' : ''}`
 
   return (
     <>
@@ -246,7 +280,7 @@ export default function App() {
               />
               <Spectrogram
                 spectrogram={state.spectrogram}
-                detections={visible}
+                detections={keptDetections}
                 focused={focused}
                 analysedUntil={state.analysedUntil}
                 duration={state.duration}
@@ -277,13 +311,20 @@ export default function App() {
               )}
 
               {state.detections.length > 0 && (
-                <ThresholdSlider
-                  value={threshold}
-                  min={floor}
-                  onChange={setThreshold}
-                  total={state.detections.length}
-                  visible={visible.length}
-                />
+                <>
+                  <ThresholdSlider
+                    value={threshold}
+                    min={floor}
+                    onChange={setThreshold}
+                    total={state.detections.length}
+                    visible={visibleCount}
+                  />
+                  <GeoRow
+                    geo={geo}
+                    masked={maskedGroups.length}
+                    onOpen={() => setGeoOpen(true)}
+                  />
+                </>
               )}
 
               {groups.length === 0 && state.detections.length > 0 && (
@@ -298,6 +339,8 @@ export default function App() {
                   par fenêtre : la liste est incomplète à ce seuil.
                 </p>
               )}
+
+              {maskedGroups.length > 0 && <MaskedSpecies groups={maskedGroups} scores={geo.scores} />}
 
               <SpeciesList
                 groups={groups}
@@ -315,6 +358,13 @@ export default function App() {
           </div>
         </div>
       </AppShell>
+
+      <GeoSheet
+        open={geoOpen}
+        onClose={() => setGeoOpen(false)}
+        geo={geo}
+        masked={maskedGroups.length}
+      />
 
       <OccurrenceSheet
         group={openGroup}
@@ -338,6 +388,95 @@ export default function App() {
         }}
       />
     </>
+  )
+}
+
+/** The filter's current setting, and the way in. Sits with the other filter. */
+function GeoRow({
+  geo,
+  masked,
+  onOpen,
+}: {
+  geo: ReturnType<typeof useGeoFilter>
+  masked: number
+  onOpen: () => void
+}) {
+  const { settings, loading } = geo
+  const detail = !settings.enabled
+    ? 'désactivé'
+    : loading
+      ? 'calcul en cours…'
+      : `${settings.latitude.toFixed(2)}, ${settings.longitude.toFixed(2)} · ${describeWeek(settings.week)}`
+
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="flex min-h-14 w-full items-center gap-3 rounded-xl border border-line px-3 text-left transition-colors duration-150 hover:border-line-strong hover:bg-hover"
+    >
+      <span className="min-w-0 flex-1">
+        <span className="block text-sm font-medium">Lieu et saison</span>
+        <span className="block truncate text-xs text-ink-3">{detail}</span>
+      </span>
+      {masked > 0 && (
+        <span className="shrink-0 rounded-full bg-gold/15 px-2 py-0.5 text-xs tabular-nums text-ink-2">
+          −{masked}
+        </span>
+      )}
+      <svg
+        aria-hidden
+        viewBox="0 0 24 24"
+        className="h-4 w-4 shrink-0 text-ink-3"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path d="m9 18 6-6-6-6" />
+      </svg>
+    </button>
+  )
+}
+
+/**
+ * The species the geo filter removed, and why.
+ *
+ * A `<details>` rather than a state flag: the platform already has a disclosure
+ * that is keyboard-operable and announced correctly, and `<summary>` is one of
+ * the elements the space shortcut deliberately stands aside for.
+ */
+function MaskedSpecies({
+  groups,
+  scores,
+}: {
+  groups: SpeciesGroup[]
+  scores: Float32Array | null
+}) {
+  return (
+    <details className="rounded-xl border border-line px-3 py-2">
+      <summary className="flex min-h-9 cursor-pointer list-none items-center text-sm text-ink-2 marker:content-['']">
+        {groups.length} espèce{groups.length > 1 ? 's' : ''} masquée
+        {groups.length > 1 ? 's' : ''} par le filtre géographique
+      </summary>
+      <ul className="mt-2 flex flex-col gap-1.5 border-t border-line pt-2">
+        {groups.map((group) => (
+          <li key={group.species.index} className="flex items-center gap-3 text-sm">
+            <span className="min-w-0 flex-1 select-text">
+              <span className="block truncate">{group.species.commonName}</span>
+              <span className="block truncate text-xs italic text-ink-3">
+                {group.species.scientificName}
+              </span>
+            </span>
+            {/* The number that removed it, next to the number that found it. */}
+            <span className="shrink-0 text-right text-xs tabular-nums text-ink-3">
+              <span className="block">chant {group.bestScore.toFixed(2)}</span>
+              <span className="block">lieu {scores ? scores[group.species.index].toFixed(3) : '—'}</span>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </details>
   )
 }
 

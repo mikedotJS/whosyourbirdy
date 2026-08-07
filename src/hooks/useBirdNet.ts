@@ -85,6 +85,15 @@ export function useBirdNet() {
    */
   const runIdRef = useRef(0)
   const [state, setState] = useState<AnalysisState>(initial)
+  /**
+   * The analyzer, exposed once it exists.
+   *
+   * The geo filter runs in the same worker, so it needs this instance rather
+   * than one of its own — a second worker would mean a second 52 MB acoustic
+   * session sitting idle next to it. It is state, not the ref, so that opening
+   * the filter re-renders once the analyzer appears.
+   */
+  const [analyzer, setAnalyzer] = useState<BirdNetAnalyzer | null>(null)
 
   useEffect(() => {
     return () => {
@@ -92,6 +101,7 @@ export function useBirdNet() {
       abortRef.current?.abort()
       analyzerRef.current?.dispose()
       analyzerRef.current = null
+      setAnalyzer(null)
     }
   }, [])
 
@@ -103,7 +113,10 @@ export function useBirdNet() {
     const abort = new AbortController()
     abortRef.current = abort
 
-    analyzerRef.current ??= new BirdNetAnalyzer()
+    if (!analyzerRef.current) {
+      analyzerRef.current = new BirdNetAnalyzer()
+      setAnalyzer(analyzerRef.current)
+    }
     const analyzer = analyzerRef.current
 
     // Skip the "downloading" phase when the model is already resident, otherwise
@@ -169,5 +182,5 @@ export function useBirdNet() {
     setState(initial)
   }, [])
 
-  return { state, analyze, reset, floor: ANALYSIS_FLOOR }
+  return { state, analyze, reset, analyzer, floor: ANALYSIS_FLOOR }
 }

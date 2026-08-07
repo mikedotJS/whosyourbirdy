@@ -2,6 +2,14 @@ import * as ort from 'onnxruntime-web'
 import { MODEL_BASE_URL, N_CLASSES, ORT_WASM_PATH, WINDOW_SAMPLES } from './constants'
 import type { ModelLoadProgress } from './types'
 
+export interface GeoManifest {
+  file: string
+  sha256: string
+  bytes: number
+  classes: number
+  defaultThreshold: number
+}
+
 export interface ModelManifest {
   file: string
   sha256: string
@@ -10,6 +18,8 @@ export interface ModelManifest {
   windowSamples: number
   sampleRate: number
   opset: number
+  /** Present once `pnpm model:build` has exported the geo model too. */
+  geo?: GeoManifest
 }
 
 const CACHE_NAME = 'birdnet-model-v1'
@@ -174,6 +184,72 @@ export async function inferWindow(
     throw new Error(`window must be ${WINDOW_SAMPLES} samples, got ${window.length}`)
   }
   const tensor = new ort.Tensor('float32', window, [1, WINDOW_SAMPLES])
+  const output = await session.run({ input: tensor })
+  return output.output.data as Float32Array
+}
+
+/**
+ * Load the geo-temporal (MData) session.
+ *
+ * Kept separate from `loadModel` and loaded lazily, because it is 29 MB for a
+ * feature most sessions never turn on. It shares the same on-disk cache and the
+ * same digest-keying, so enabling the filter costs one download ever.
+ */
+export async function loadGeoModel(options: {
+  baseUrl?: string
+  wasmPath?: string
+  onProgress?: (progress: ModelLoadProgress) => void
+} = {}): Promise<ort.InferenceSession> {
+  const baseUrl = options.baseUrl ?? MODEL_BASE_URL
+  configureRuntime(options.wasmPath)
+
+  const response = await fetch(`${baseUrl}/manifest.json`)
+  if (!response.ok) throw new Error(`no model manifest at ${baseUrl}/manifest.json`)
+  const manifest = (await response.json()) as ModelManifest
+
+  if (!manifest.geo) {
+    throw new Error(
+      'this build has no geo model — re-run `pnpm model:build` to export it alongside the acoustic one',
+    )
+  }
+  if (manifest.geo.classes !== N_CLASSES) {
+    throw new Error(
+      `geo model has ${manifest.geo.classes} classes, expected ${N_CLASSES} — ` +
+        'it would be filtering against the wrong label list',
+    )
+  }
+
+  const bytes = await fetchModel(
+    `${baseUrl}/${manifest.geo.file}`,
+    manifest.geo.sha256,
+    options.onProgress,
+  )
+  const session = await ort.InferenceSession.create(bytes, {
+    executionProviders: ['wasm'],
+    graphOptimizationLevel: 'all',
+  })
+  options.onProgress?.({
+    phase: 'ready',
+    loaded: bytes.byteLength,
+    total: bytes.byteLength,
+    fromCache: false,
+  })
+  return session
+}
+
+/**
+ * Score every class for one place and time.
+ *
+ * Returns probabilities directly — this model ends in its own sigmoid, so
+ * passing the result through `flatSigmoid` would apply one twice.
+ */
+export async function inferGeo(
+  session: ort.InferenceSession,
+  latitude: number,
+  longitude: number,
+  week: number,
+): Promise<Float32Array> {
+  const tensor = new ort.Tensor('float32', Float32Array.from([latitude, longitude, week]), [1, 3])
   const output = await session.run({ input: tensor })
   return output.output.data as Float32Array
 }

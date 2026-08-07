@@ -1,5 +1,5 @@
 /// <reference lib="webworker" />
-import { inferWindow, loadModel } from './model'
+import { inferGeo, inferWindow, loadGeoModel, loadModel } from './model'
 import { flatSigmoid } from './sigmoid'
 import { planWindows, sliceWindow } from './windows'
 import { computeSpectrogram } from './spectrogram'
@@ -19,6 +19,15 @@ declare const self: DedicatedWorkerGlobalScope
 
 let session: ort.InferenceSession | null = null
 let loading: Promise<void> | null = null
+/**
+ * The geo model, loaded on first use and then kept.
+ *
+ * Separate from the acoustic session on purpose: it is 29 MB for a filter most
+ * sessions never switch on, and `init` must not drag it along.
+ */
+let geoSession: ort.InferenceSession | null = null
+let geoLoading: Promise<void> | null = null
+let geoConfig: { modelUrl: string; wasmPath: string } | null = null
 const cancelled = new Set<number>()
 
 function post(message: WorkerResponse, transfer: Transferable[] = []): void {
@@ -26,6 +35,9 @@ function post(message: WorkerResponse, transfer: Transferable[] = []): void {
 }
 
 async function ensureModel(modelUrl: string, wasmPath: string): Promise<void> {
+  // Recorded before the early return, so a `geo` request works whether or not
+  // this call is the one that did the loading.
+  geoConfig = { modelUrl, wasmPath }
   if (session) return
   loading ??= (async () => {
     const loaded = await loadModel({
@@ -39,6 +51,32 @@ async function ensureModel(modelUrl: string, wasmPath: string): Promise<void> {
     throw error
   })
   await loading
+}
+
+async function geo(request: Extract<WorkerRequest, { type: 'geo' }>): Promise<void> {
+  const { requestId, latitude, longitude, week } = request
+  if (!geoConfig) throw new Error('worker received geo before init')
+  const { modelUrl, wasmPath } = geoConfig
+
+  geoLoading ??= (async () => {
+    geoSession = await loadGeoModel({
+      baseUrl: modelUrl,
+      wasmPath,
+      onProgress: (progress) => post({ type: 'geo-progress', requestId, progress }),
+    })
+  })().catch((error: unknown) => {
+    geoLoading = null // retryable, rather than wedged for the worker's lifetime
+    throw error
+  })
+  await geoLoading
+
+  if (!geoSession) throw new Error('geo model failed to load')
+  const scores = await inferGeo(geoSession, latitude, longitude, week)
+  // Copy before transferring: the tensor's buffer belongs to the ORT session and
+  // detaching it would leave the session holding a neutered ArrayBuffer, so the
+  // next call on the same session reads zeroes.
+  const copy = Float32Array.from(scores)
+  post({ type: 'geo-scores', requestId, scores: copy }, [copy.buffer])
 }
 
 /**
@@ -165,11 +203,14 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
       case 'cancel':
         cancelled.add(message.requestId)
         break
+      case 'geo':
+        await geo(message)
+        break
     }
   } catch (error) {
     post({
       type: 'error',
-      requestId: message.type === 'analyze' ? message.requestId : undefined,
+      requestId: message.type === 'analyze' || message.type === 'geo' ? message.requestId : undefined,
       message: error instanceof Error ? error.message : String(error),
     })
   }

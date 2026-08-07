@@ -90,6 +90,11 @@ export type WorkerRequest =
       topKPerWindow: number
     }
   | { type: 'cancel'; requestId: number }
+  /**
+   * Score every class for a place and a week. Loads the 29 MB geo model on
+   * first use — a session that never turns the filter on never pays for it.
+   */
+  | { type: 'geo'; requestId: number; latitude: number; longitude: number; week: number }
 
 /** Messages the worker emits. */
 export type WorkerResponse =
@@ -130,4 +135,9 @@ export type WorkerResponse =
       timings: Float32Array
     }
   | { type: 'cancelled'; requestId: number }
+  /** Download progress for the geo model, kept apart from the acoustic one so
+      the UI can say which of the two it is waiting on. */
+  | { type: 'geo-progress'; requestId: number; progress: ModelLoadProgress }
+  /** One probability per class, already in [0, 1] — this model has its own sigmoid. */
+  | { type: 'geo-scores'; requestId: number; scores: Float32Array }
   | { type: 'error'; requestId?: number; message: string }
