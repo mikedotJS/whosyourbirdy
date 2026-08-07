@@ -3,12 +3,26 @@
   <head>
     <meta charset="utf-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- `viewport-fit=cover` lets the layout reach under the notch and the home
+         indicator; the shell then pays the safe-area insets back where they
+         matter. Without it the page is letterboxed and can never look installed.
+         `user-scalable` is left alone on purpose — blocking zoom is a common
+         "app feel" trick and an accessibility failure. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>whosyourbirdy — identification d'oiseaux au chant</title>
     <meta
       name="description"
       content="Identification d'oiseaux par le chant, entièrement dans le navigateur. Aucun envoi de fichier."
     />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <!-- iOS ignores the manifest's icons for "add to home screen". -->
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="whosyourbirdy" />
+    <!-- Tints the system bars to the surface actually in use, so the status bar
+         does not sit on a colour the app never shows. -->
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0a0b14" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#fbfaf6" />
   </head>
   <body>
     <div id="root"></div>

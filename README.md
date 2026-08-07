@@ -291,6 +291,84 @@ les dalles bon marché ; à cette opacité il ne touche pas les contrastes ci-de
 ornement, et la lueur dorée ambiante ne se pose que derrière le spectrogramme — le seul objet qui la
 mérite.
 
+### La forme : un téléphone, à toutes les tailles
+
+Une colonne unique de 420 px, trois rangées qui ne bougent jamais — en-tête, contenu défilant, barre
+d'action. Sous 480 px elle occupe tout l'écran ; au-delà elle se décolle et devient un panneau posé.
+
+Le point qui fait la différence entre « une page » et « une app » n'est pas l'arrondi, c'est que **la
+barre d'action ne défile pas**. L'action principale n'est jamais quelque chose qu'il faut aller
+chercher. La barre a deux emplacements et un seul est occupé aujourd'hui : le gauche est réservé à la
+bascule Fichier / Micro, pour ne pas avoir à la re-dessiner quand l'écoute directe arrivera.
+
+Le compromis est assumé et il a un coût : **le spectrogramme perd la moitié de sa largeur sur
+bureau** (390 px au lieu de ~830). Il compense avec un mode plein écran — le même élément déplacé,
+pas un second canvas, donc un seul `ResizeObserver` et une seule boucle d'animation.
+
+Trois détails de géométrie qui ne se devinent pas :
+
+- `--panel-inset` fait deux choses en une expression : `max(24px, calc((100dvh - 880px) / 2))` centre
+  le panneau *et* plafonne sa hauteur, puisque la hauteur en est déduite. La feuille inférieure lit la
+  même variable, donc elle se pose sur le bord du panneau et non sur celui de la fenêtre.
+- Les safe-areas ne sont payées que quand le panneau est à fond perdu :
+  `max(0px, calc(env(safe-area-inset-top) - var(--panel-inset)))`. Une fois le panneau décollé,
+  l'encoche est déjà dégagée.
+- La rangée centrale est en `minmax(0, 1fr)` et pas `1fr` : une rangée `1fr` refuse de descendre sous
+  la hauteur de son contenu, donc rien ne défile et c'est la barre qui sort de l'écran.
+
+`viewport-fit=cover` est indispensable pour atteindre l'aspect installé. `user-scalable=no` ne l'est
+pas : bloquer le zoom est un raccourci classique vers le « feeling app » et un échec d'accessibilité.
+
+**Les occurrences sont passées dans une feuille inférieure.** Dépliées en ligne, elles poussaient
+toutes les lignes suivantes vers le bas d'une hauteur variable — sur une colonne de téléphone, ce
+qu'on venait de toucher se déplaçait sous le pouce. La feuille est un vrai `<dialog>` ouvert avec
+`showModal()` : le piège de focus, l'arrière-plan inerte, `Échap` et l'empilement en top-layer sont
+fournis par la plateforme, et sont précisément ce qu'une feuille écrite à la main rate. Il ne reste
+que la géométrie et le glisser-pour-fermer. Elle est plafonnée à 60 dvh pour que le spectrogramme
+reste visible derrière : sélectionner une espèce sert à voir ses bandes, les cacher annulerait le
+geste.
+
+Conséquence à traiter, pas à ignorer : la feuille fermée, plus rien ne disait quel oiseau on entend.
+La ligne d'espèce porte donc un état de lecture, et le rail à sa gauche a trois états où la lecture
+gagne sur la sélection.
+
+### Installable et hors ligne
+
+`manifest.webmanifest`, icônes rendues par `node scripts/icons.mjs` — avec Playwright, déjà présent
+pour le smoke : un navigateur est un bon rastériseur SVG, et ajouter `sharp` pour transformer un
+vecteur de 300 octets en trois PNG coûterait plus cher que le problème. L'icône maskable est une
+**image différente**, pas la même mise à l'échelle : Android recadre selon la forme du lanceur, et
+livrer la version aux coins arrondis comme maskable la fait arrondir une seconde fois.
+
+Le service worker est écrit à la main dans `scripts/sw-template.js` ; la liste de précache est
+injectée au build par le plugin `pwaAssets()`, sur le modèle de `ortRuntime()` qui existait déjà —
+c'est le seul moyen d'obtenir les noms hachés, et ça évite Workbox pour ce qui tient en trente lignes
+d'appels à `caches`.
+
+Les décisions intéressantes portent sur **ce qui n'est pas précaché** :
+
+| | Taille | Traitement |
+|---|---|---|
+| Coquille (document, chunks, CSS, police, icônes) | ~900 Ko | précachée à l'installation |
+| Runtime WASM d'ONNX Runtime | 24 Mo | mis en cache **au premier usage réel** |
+| Modèle BirdNET | 52 Mo | son propre cache, clé SHA-256, barre de progression |
+
+Un service worker qui précache 76 Mo à la première visite prend une décision qui appartient à
+l'utilisateur. Le modèle garde son cache existant dans `src/lib/birdnet/model.ts`, invalidé par le
+condensé du manifeste ; le worker l'ignore explicitement plutôt que de le stocker une seconde fois.
+
+Deux refus de plus, tous deux étant le défaut ailleurs :
+
+- **Jamais en développement.** Un worker qui cache entre le serveur de dev et le navigateur transforme
+  chaque modification en devinette, et ça survit à un rechargement.
+- **Jamais de `skipWaiting()` spontané.** Un nouveau worker qui s'active seul remplace le code de
+  l'application pendant ce qu'elle est en train de faire — un téléchargement de 52 Mo, une analyse de
+  deux minutes. Il attend, une pastille le signale, et l'échange a lieu quand on le demande.
+
+Ce que je ne peux pas vérifier ici : l'ajout à l'écran d'accueil sous **iOS Safari**, qui ignore une
+partie du manifeste. L'installabilité est vérifiée sous Chromium, et le smoke coupe le réseau puis
+recharge — la question utile n'est pas « un worker est-il enregistré » mais « l'app revient-elle ».
+
 ### Clavier
 
 `espace` lecture/pause du segment sous la tête de lecture, `←/→` déplacent de 3 s (une fenêtre

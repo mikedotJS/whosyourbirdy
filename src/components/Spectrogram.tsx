@@ -227,6 +227,32 @@ export function Spectrogram({
   const [size, setSize] = useState({ width: 0, height: 288 })
   const [hoverTime, setHoverTime] = useState<number | null>(null)
   const reduced = useReducedMotion()
+  /**
+   * Full-viewport mode.
+   *
+   * A 420px-wide column is a deliberate shape for the app and a poor one for a
+   * two-minute spectrogram: at that width one pixel is nearly a second. Rather
+   * than argue with the shape, the picture gets to leave it.
+   *
+   * Implemented by moving the existing element, not by mounting a second one —
+   * the `ResizeObserver` above already redraws at whatever size it lands in, so
+   * there is one canvas, one animation loop, and no state to reconcile.
+   */
+  const [expanded, setExpanded] = useState(false)
+
+  // Escape leaves full-viewport mode. `preventDefault` matters: the global
+  // shortcut handler treats a defaulted-prevented event as already dealt with,
+  // so this closes the picture instead of also clearing the species selection.
+  useEffect(() => {
+    if (!expanded) return
+    const handle = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      setExpanded(false)
+    }
+    window.addEventListener('keydown', handle)
+    return () => window.removeEventListener('keydown', handle)
+  }, [expanded])
 
   /**
    * Animation state, deliberately in refs rather than React state.
@@ -523,10 +549,34 @@ export function Spectrogram({
   }
 
   return (
-    <figure className="flex flex-col gap-2">
+    <figure
+      className={[
+        'flex flex-col',
+        expanded
+          ? 'fixed inset-0 z-50 gap-2 bg-surface px-3 pt-[max(0.5rem,env(safe-area-inset-top))] pb-[max(0.5rem,env(safe-area-inset-bottom))]'
+          : 'gap-1',
+      ].join(' ')}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs text-ink-3">
+          {spectrogram ? `0 – ${(spectrogram.maxHz / 1000).toFixed(0)} kHz` : ''}
+        </span>
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          aria-pressed={expanded}
+          aria-label={expanded ? 'Réduire le spectrogramme' : 'Agrandir le spectrogramme'}
+          className="-mr-2 flex h-11 w-11 items-center justify-center rounded-md text-ink-3 transition-colors duration-150 hover:bg-hover hover:text-ink"
+        >
+          <ExpandIcon expanded={expanded} />
+        </button>
+      </div>
       <div
         ref={wrapRef}
-        className="relative h-72 w-full cursor-crosshair touch-none select-none rounded-sm outline-offset-2 focus-visible:outline-2 focus-visible:outline-focus"
+        className={[
+          'relative w-full cursor-crosshair touch-none select-none rounded-sm outline-offset-2 focus-visible:outline-2 focus-visible:outline-focus',
+          expanded ? 'min-h-0 flex-1' : 'h-72',
+        ].join(' ')}
         onPointerMove={(e) => {
           const time = handlePointer(e)
           setHoverTime(time)
@@ -582,6 +632,28 @@ export function Spectrogram({
         confiance. Sélectionner une espèce dans la liste met ses fenêtres en évidence.
       </figcaption>
     </figure>
+  )
+}
+
+/** Four arrows out, or four arrows in. */
+function ExpandIcon({ expanded }: { expanded: boolean }) {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 24 24"
+      className="h-5 w-5"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      {expanded ? (
+        <path d="M9 3v6H3M15 3v6h6M9 21v-6H3M15 21v-6h6" />
+      ) : (
+        <path d="M3 9V3h6M21 9V3h-6M3 15v6h6M21 15v6h-6" />
+      )}
+    </svg>
   )
 }
 

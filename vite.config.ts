@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { createReadStream, existsSync, readdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { defineConfig, type Plugin } from 'vite'
@@ -59,10 +60,61 @@ function ortRuntime(): Plugin {
   }
 }
 
+const SW_TEMPLATE = resolve(__dirname, 'scripts/sw-template.js')
+
+/**
+ * Emit the service worker with a real precache list.
+ *
+ * The list cannot be written by hand: the asset names carry content hashes that
+ * only exist after the bundle is generated. Reading them out of
+ * `generateBundle` is the same shape as `ortRuntime()` above, and it avoids
+ * pulling in Workbox to solve one string substitution.
+ *
+ * What goes in is the shell — document, chunks, stylesheet, self-hosted font,
+ * icons. What stays out is anything large enough that downloading it silently
+ * would be a decision the user should get to make: the 52 MB model and the 24 MB
+ * WASM runtime are cached at runtime, on first use. The parity harness is a
+ * build entry, not part of the app, so it is excluded too.
+ */
+function pwaAssets(): Plugin {
+  const STATIC = ['/favicon.svg', '/manifest.webmanifest']
+  const ICONS = ['192.png', '512.png', 'maskable-512.png'].map((n) => `/icons/icon-${n}`)
+
+  return {
+    name: 'pwa-assets',
+    apply: 'build',
+
+    generateBundle(_options, bundle) {
+      const emitted = Object.keys(bundle)
+        // Basename, not full path: the harness bundle lands at
+        // `assets/parity-<hash>.js`, so a prefix test on the whole name misses
+        // it and quietly precached 400 KB of test code.
+        .filter((name) => !(name.split('/').pop() ?? '').startsWith('parity'))
+        .filter((name) => !name.startsWith('ort/'))
+        // The .jsep.wasm copy Rollup emits for the ORT import is 24 MB and is
+        // served from /ort/ anyway.
+        .filter((name) => !name.endsWith('.wasm'))
+        .map((name) => `/${name}`)
+
+      const precache = [...new Set(['/index.html', ...emitted, ...STATIC, ...ICONS])].sort()
+
+      // Any change to the shell changes this, which is what retires the previous
+      // cache in the worker's activate step.
+      const version = createHash('sha256').update(precache.join('\n')).digest('hex').slice(0, 12)
+
+      const source = readFileSync(SW_TEMPLATE, 'utf8')
+        .replace('__VERSION__', version)
+        .replace('__PRECACHE__', JSON.stringify(precache, null, 2))
+
+      this.emitFile({ type: 'asset', fileName: 'sw.js', source })
+    },
+  }
+}
+
 // Fully static build: no SSR, no server, no API routes. `onnxruntime-web` and the
 // Web Audio API are browser-only, so there is no server-render pass to opt out of.
 export default defineConfig({
-  plugins: [react(), tailwindcss(), ortRuntime()],
+  plugins: [react(), tailwindcss(), ortRuntime(), pwaAssets()],
   optimizeDeps: {
     // ORT resolves its .wasm/.mjs pairs at runtime from `ort.env.wasm.wasmPaths`.
     // Pre-bundling rewrites those relative URLs and breaks the lookup.

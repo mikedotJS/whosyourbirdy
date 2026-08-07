@@ -41,10 +41,14 @@ const GOLDEN = {
   top: { common: 'Mésange à tête noire', scientific: 'Poecile atricapillus', count: '2×', score: 0.81 },
 }
 
-const ROWS = 'main > ul > li'
+const ROWS = '#species-list > li'
+/** Occurrences live in the bottom sheet, which is only open with a selection. */
+const CHIPS = 'dialog.sheet ul button'
+/** Header, scrolling content and action bar. The status line is in the bar. */
+const PANEL = '.app-panel'
 
 async function readRows(page) {
-  return page.locator('main > ul > li').evaluateAll((items) =>
+  return page.locator(ROWS).evaluateAll((items) =>
     items.map((li) => {
       const text = li.innerText.split('\n').map((t) => t.trim()).filter(Boolean)
       return {
@@ -57,9 +61,9 @@ async function readRows(page) {
   )
 }
 
-/** Read the detection count out of the summary line. */
+/** Read the detection count out of the summary line, which lives in the bar. */
 async function countDetections(page) {
-  const text = await page.locator('main').innerText()
+  const text = await page.locator(PANEL).innerText()
   const match = text.match(/(\d+)\s+détection/)
   return match ? Number(match[1]) : -1
 }
@@ -94,6 +98,9 @@ const MIME = {
   '.wasm': 'application/wasm',
   '.onnx': 'application/octet-stream',
   '.txt': 'text/plain',
+  '.png': 'image/png',
+  '.svg': 'image/svg+xml',
+  '.webmanifest': 'application/manifest+json',
   '.wav': 'audio/wav',
 }
 
@@ -143,7 +150,10 @@ async function main() {
     page.on('response', (r) => r.status() >= 400 && problems.push(`HTTP ${r.status()} ${r.url()}`))
 
     console.log('\n\x1b[1mUI smoke test\x1b[0m\n')
-    await page.goto(`http://127.0.0.1:${port}/`)
+    // 127.0.0.1 is a secure context in Chromium, which is what lets the service
+    // worker register over plain HTTP.
+    var base = `http://127.0.0.1:${port}`
+    await page.goto(`${base}/`)
     await page.screenshot({ path: join(shotsDir, '1-idle.png') })
     check('page renders', (await page.locator('h1').textContent()) === 'whosyourbirdy')
     check(
@@ -154,7 +164,7 @@ async function main() {
     await page.setInputFiles('input[type=file]', FIXTURE)
     await page.waitForTimeout(2500)
     await page.screenshot({ path: join(shotsDir, '2-progress.png') })
-    const progressText = await page.locator('main').innerText()
+    const progressText = await page.locator(PANEL).innerText()
     check(
       'progress is reported while analysing',
       /Téléchargement|Analyse|Décodage|Préparation/.test(progressText),
@@ -195,7 +205,7 @@ async function main() {
     const rows = await page.locator(ROWS).count()
     check('exactly the expected species at 0.25', rows === GOLDEN.species025, `${rows} species`)
 
-    const summary = await page.locator('main').innerText()
+    const summary = await page.locator(PANEL).innerText()
     check(
       'the summary states the species and detection counts',
       summary.includes(`${GOLDEN.species025} espèces`) &&
@@ -221,11 +231,16 @@ async function main() {
       `${scores[0]} … ${scores[scores.length - 1]}`,
     )
 
-    // Focusing a species reveals its occurrences, every one on the 3 s grid.
+    // Selecting a species opens its occurrences in a modal sheet, every one on
+    // the 3 s grid.
     await page.locator(`${ROWS} button`).first().click()
-    await page.waitForTimeout(300)
-    const chips = await page.locator(`${ROWS}`).first().locator('ul button').allInnerTexts()
-    check('focusing a species reveals its occurrences', chips.length === 2, chips.join(' '))
+    await page.waitForTimeout(400)
+    check(
+      'selecting a species opens a modal sheet',
+      (await page.locator('dialog.sheet[open]').count()) === 1,
+    )
+    const chips = await page.locator(CHIPS).allInnerTexts()
+    check('the sheet lists the species occurrences', chips.length === 2, chips.join(' '))
     // innerText runs the chip's timecode and score together ("0:000.81"), so
     // pull the clock out by shape rather than by splitting on whitespace.
     const offGrid = chips.filter((c) => {
@@ -236,10 +251,28 @@ async function main() {
 
     // Focusing must actually change the picture, not just the list.
     const blueWhenFocused = await countFocusColour(page)
-    await page.locator(`${ROWS} button`).first().click() // unpin
-    // The pointer is still resting on the row after the click, and hover alone
-    // keeps a species focused — by design. Move away before measuring, or this
-    // compares the focused state with itself.
+
+    // Escape closes the sheet, and `<dialog>` hands focus back to whatever
+    // opened it. That restoration is the reason this is a real dialog and not a
+    // positioned div, so it is worth asserting rather than assuming.
+    await page.keyboard.press('Escape')
+    await page.waitForTimeout(300)
+    const returned = await page.evaluate(() => {
+      const el = document.activeElement
+      return el?.closest('#species-list > li') === document.querySelector('#species-list > li')
+    })
+    check('escape closes the sheet and returns focus to the row that opened it', returned)
+    // A closed `<dialog>` is hidden by the browser's own `display: none`, which
+    // a `display: flex` on the element outranks — that left an empty strip of
+    // sheet parked over the action bar, invisible to every other assertion here.
+    check(
+      'the closed sheet takes no space',
+      !(await page.locator('dialog.sheet').isVisible()),
+    )
+
+    // Focus alone keeps a species highlighted — by design, for keyboard users —
+    // so blur before measuring, or this compares the focused state with itself.
+    await page.evaluate(() => document.activeElement?.blur())
     await page.mouse.move(5, 5)
     await page.waitForTimeout(500)
     const blueWhenNot = await countFocusColour(page)
@@ -326,38 +359,30 @@ async function main() {
     // from the keyboard. Focus is on a species row here, so this press has to
     // reach the row and toggle it, not start playback.
     await page.keyboard.press('Space')
-    await page.waitForTimeout(200)
-    // Then move focus away. Hover-focus is released by the blur, so the
-    // occurrences only stay open if that press really reached the row and
-    // pinned it. If the shortcut had swallowed it, they would close here.
-    await page.locator('[role=slider]').focus()
-    await page.waitForTimeout(200)
-    const stillOpen = await page.locator(`${ROWS} ul button`).count()
+    await page.waitForTimeout(400)
     check(
       'space still activates the focused control instead of being swallowed',
-      stillOpen === 2,
-      `${stillOpen} occurrence chips after moving focus off the row`,
+      (await page.locator('dialog.sheet[open]').count()) === 1,
+      'the focused row opened its sheet',
     )
 
-    // With focus on the timeline instead, the same key is the play shortcut.
+    // Back out, and take focus off the list so the next press has no control to
+    // activate — that is when space becomes the play shortcut.
+    await page.keyboard.press('Escape')
+    await page.waitForTimeout(300)
+    await page.locator('[role=slider]').focus()
     await page.keyboard.press('Space')
-    await page.waitForTimeout(700)
-    const playingChips = await page.locator('[aria-pressed=true]').count()
-    check('space starts playback when no control has focus', playingChips === 1, `${playingChips} chip playing`)
+    await page.waitForTimeout(800)
+    check(
+      'space starts playback when no control has focus',
+      (await page.locator('#species-list [data-playing=true]').count()) === 1,
+      'one species reports itself as sounding',
+    )
     await page.keyboard.press('Space')
     await page.waitForTimeout(300)
     check(
       'space stops it again',
-      (await page.locator('[aria-pressed=true]').count()) === 0,
-    )
-
-    // Escape releases the selection, which also puts the page back in the
-    // nothing-focused state the playback checks below start from.
-    await page.keyboard.press('Escape')
-    await page.waitForTimeout(250)
-    check(
-      'escape releases the selected species',
-      (await page.locator(`${ROWS} ul button`).count()) === 0,
+      (await page.locator('#species-list [data-playing=true]').count()) === 0,
     )
 
     // The slider must filter in memory, not re-run the model.
@@ -381,15 +406,14 @@ async function main() {
     await page.locator('input[type=range]').fill('0.25')
     await page.waitForTimeout(120)
 
-    // Assert on what a user perceives — the row reporting itself as playing —
+    // Assert on what a user perceives — the chip reporting itself as playing —
     // rather than on the <audio> element, which is created via `new Audio()` and
-    // never attached to the document.
-    // Re-pin a species: the focus test above deliberately left nothing focused,
-    // so there are no occurrence chips to click until we open one again.
+    // never attached to the document. Re-open a species: the checks above closed
+    // the sheet, so there are no occurrence chips to click until one is open.
     await page.locator(`${ROWS} button`).first().click()
-    await page.waitForTimeout(300)
+    await page.waitForTimeout(400)
 
-    const firstRow = page.locator(`${ROWS} ul button`).first()
+    const firstRow = page.locator(CHIPS).first()
     await firstRow.click()
     await page.waitForTimeout(700)
     check(
@@ -405,6 +429,65 @@ async function main() {
       (await firstRow.getAttribute('aria-pressed')) === 'false',
     )
 
+    // ---- the shell, at phone size -----------------------------------------
+    // Resizing the existing page rather than opening a mobile context: what is
+    // under test here is layout, and a second context would pay for the 52 MB
+    // model and a second full analysis to reach the same screen.
+    await page.keyboard.press('Escape')
+    await page.waitForTimeout(300)
+    await page.setViewportSize({ width: 390, height: 844 }) // iPhone 14
+    await page.waitForTimeout(600)
+    await page.screenshot({ path: join(shotsDir, '6-phone.png') })
+
+    const overflow = await page.evaluate(() => {
+      const panel = document.querySelector('.app-panel')
+      return {
+        doc: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        panel: panel.scrollWidth - panel.clientWidth,
+      }
+    })
+    check(
+      'nothing overflows horizontally at 390 px',
+      overflow.doc <= 0 && overflow.panel <= 0,
+      `document +${overflow.doc}px, panel +${overflow.panel}px`,
+    )
+
+    // WCAG 2.5.8 exempts links inline in a block of text, which is what the
+    // attribution is, so the audit covers controls: buttons and the slider.
+    const small = await page.evaluate(() => {
+      const out = []
+      for (const el of document.querySelectorAll('button, input[type=range], select')) {
+        const box = el.getBoundingClientRect()
+        if (box.width === 0 && box.height === 0) continue // not rendered
+        if (box.height >= 44 && box.width >= 44) continue
+        const name = (el.getAttribute('aria-label') ?? el.textContent ?? '').trim().slice(0, 22)
+        out.push(`${name || el.tagName.toLowerCase()} ${Math.round(box.width)}×${Math.round(box.height)}`)
+      }
+      return out
+    })
+    check('every tap target clears 44 px', small.length === 0, small.slice(0, 4).join(' | '))
+
+    // The header and the action bar are the app's fixed furniture. If either
+    // moves when the content scrolls, this is a page again.
+    const barBefore = await page.locator('.app-bar').boundingBox()
+    const headerBefore = await page.locator('.app-header').boundingBox()
+    const scrolledBy = await page.locator('.app-scroll').evaluate((el) => {
+      el.scrollTo(0, el.scrollHeight)
+      return el.scrollTop
+    })
+    await page.waitForTimeout(300)
+    const barAfter = await page.locator('.app-bar').boundingBox()
+    const headerAfter = await page.locator('.app-header').boundingBox()
+    check(
+      'the header and action bar stay put while the content scrolls',
+      scrolledBy > 50 &&
+        Math.abs(barBefore.y - barAfter.y) < 1 &&
+        Math.abs(headerBefore.y - headerAfter.y) < 1,
+      `content scrolled ${Math.round(scrolledBy)}px, bar moved ${Math.abs(barBefore.y - barAfter.y).toFixed(1)}px`,
+    )
+    await page.screenshot({ path: join(shotsDir, '7-phone-scrolled.png') })
+    await page.setViewportSize({ width: 900, height: 1100 })
+
     // ---- regression: switching files mid-analysis -------------------------
     // A cancelled run used to finish anyway and write its results under the new
     // file's name — 24 bird detections displayed for a 29-byte text file. The
@@ -416,12 +499,11 @@ async function main() {
     await page.reload()
     await page.setInputFiles('input[type=file]', FIXTURE)
     await page.waitForSelector('text=/fenêtre \\d+ \\/ 40/', { timeout: 600_000 })
-    await page.click('text=Autre fichier')
     await page.setInputFiles('input[type=file]', decoy)
 
     // Long enough that the abandoned run would have finished if it were still live.
     await page.waitForTimeout(20_000)
-    const after = await page.locator('main').innerText()
+    const after = await page.locator(PANEL).innerText()
     await page.screenshot({ path: join(shotsDir, '5-switched.png'), fullPage: true })
 
     check(
@@ -439,14 +521,97 @@ async function main() {
     await page.reload()
     await page.setInputFiles('input[type=file]', FIXTURE)
     await page.waitForSelector('text=/fenêtre \\d+ \\/ 40/', { timeout: 600_000 })
-    await page.click('text=Autre fichier')
+    await page.click('[aria-label="Recommencer avec un autre fichier"]')
     await page.waitForTimeout(20_000)
-    const afterReset = await page.locator('main').innerText()
+    const afterReset = await page.locator(PANEL).innerText()
     check(
       'reset mid-analysis leaves the drop zone and nothing else',
-      /Déposez un enregistrement/.test(afterReset) && (await page.locator(ROWS).count()) === 0,
+      /Choisir un enregistrement/.test(afterReset) && (await page.locator(ROWS).count()) === 0,
       afterReset.split('\n').slice(0, 2).join(' | '),
     )
+
+    // ---- installable, and usable with the network off ----------------------
+    // A fresh context, because a service worker registration and its caches are
+    // exactly the state the rest of this run must not inherit.
+    const pwa = await browser.newContext({ viewport: { width: 390, height: 844 } })
+    const pwaPage = await pwa.newPage()
+    pwaPage.on('console', (m) => m.type() === 'error' && problems.push(`pwa: ${m.text()}`))
+    pwaPage.on('pageerror', (e) => problems.push(`pwa pageerror: ${e.message}`))
+
+    const manifestResponse = await pwaPage.goto(`${base}/manifest.webmanifest`)
+    const manifest = JSON.parse(await manifestResponse.text())
+    check(
+      'the manifest is served and describes a standalone app',
+      manifestResponse.status() === 200 &&
+        manifest.display === 'standalone' &&
+        manifest.start_url === '/',
+      `${manifestResponse.status()}, display ${manifest.display}`,
+    )
+    // A rounded icon shipped as maskable is the classic mistake: Android crops
+    // it a second time and eats the corners.
+    check(
+      'it ships a 512 px icon and a separate maskable one',
+      manifest.icons.some((i) => i.sizes === '512x512' && i.purpose === 'any') &&
+        manifest.icons.some((i) => i.purpose === 'maskable'),
+      manifest.icons.map((i) => `${i.sizes} ${i.purpose}`).join(', '),
+    )
+
+    await pwaPage.goto(`${base}/`)
+    // Bounded on purpose. `serviceWorker.ready` never rejects — if registration
+    // silently does not happen, it simply waits forever, which turns a failed
+    // check into a hung suite. It cost fifteen minutes to learn that once.
+    const swState = await pwaPage.evaluate(() =>
+      Promise.race([
+        // `ready` resolves as soon as there *is* an active worker, which
+        // includes `activating` — ours spends that window pruning old caches and
+        // claiming clients. Wait for the state it actually has to reach.
+        navigator.serviceWorker.ready.then(
+          (r) =>
+            new Promise((resolve) => {
+              const worker = r.active
+              if (!worker) return resolve('none')
+              if (worker.state === 'activated') return resolve('activated')
+              worker.addEventListener('statechange', () => {
+                if (worker.state === 'activated') resolve('activated')
+              })
+            }),
+        ),
+        new Promise((resolve) => setTimeout(() => resolve('never registered'), 20_000)),
+      ]),
+    )
+    check('the service worker reaches activated', swState === 'activated', swState)
+
+    // The precache must not quietly include the 52 MB model or the 24 MB
+    // runtime: both are fetched on first use, with progress, and precaching them
+    // would turn a first visit into a 76 MB download nobody asked for.
+    const precached = await pwaPage.evaluate(async () => {
+      const names = await caches.keys()
+      const shell = names.find((n) => n.startsWith('shell-'))
+      if (!shell) return null
+      const keys = await (await caches.open(shell)).keys()
+      return keys.map((r) => new URL(r.url).pathname)
+    })
+    check(
+      'the precache holds the shell only, not the model or the runtime',
+      precached !== null &&
+        precached.length > 8 &&
+        !precached.some((p) => p.endsWith('.onnx') || p.startsWith('/ort/') || p.includes('parity')),
+      `${precached?.length ?? 0} entries`,
+    )
+
+    // The real question is not "is a worker registered" but "does the app come
+    // back with the network off".
+    await pwa.setOffline(true)
+    await pwaPage.reload()
+    await pwaPage.waitForSelector('h1', { timeout: 15_000 })
+    check(
+      'the app loads with the network off',
+      (await pwaPage.locator('h1').textContent()) === 'whosyourbirdy' &&
+        (await pwaPage.locator('.app-bar').count()) === 1,
+    )
+    await pwaPage.screenshot({ path: join(shotsDir, '8-offline.png') })
+    await pwa.setOffline(false)
+    await pwa.close()
 
     check('no console errors, page errors or 404s', problems.length === 0, problems.slice(0, 3).join(' | '))
   } finally {

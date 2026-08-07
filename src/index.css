@@ -68,12 +68,113 @@
 
 :root {
   color-scheme: dark light;
+
+  /*
+   * Shape: a phone, at every size.
+   *
+   * On a handset the app *is* the screen, so the inset is zero and the corners
+   * are square — a rounded card floating inside a phone screen looks like a
+   * website pretending. Past 480 × 560 the same column becomes a floating panel.
+   *
+   * The one expression below does two jobs: it centres the panel vertically and
+   * caps its height at 880px. Above 928px of viewport the inset grows and the
+   * panel stays 880 tall; below it, the inset sticks at 24 and the panel
+   * shrinks. Deriving the height from the inset keeps the two in agreement, and
+   * the bottom sheet reads the same variable so it lands on the panel's edge
+   * rather than the window's.
+   */
+  --panel-inset: 0px;
+  --panel-radius: 0px;
+  --panel-width: 100%;
+}
+
+@media (min-width: 480px) and (min-height: 560px) {
+  :root {
+    --panel-inset: max(24px, calc((100dvh - 880px) / 2));
+    --panel-radius: 28px;
+    --panel-width: 420px;
+  }
+}
+
+html,
+body {
+  height: 100%;
+  /*
+   * The page itself never scrolls; the panel's middle row does. Without this the
+   * document scrolls behind a fixed panel, which on iOS produces the rubber-band
+   * that instantly reads as "this is a web page".
+   */
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 
 body {
   @apply bg-surface text-ink antialiased;
   font-synthesis-weight: none;
   text-rendering: optimizeLegibility;
+  /* Grey flash on tap is a browser affordance, not an app one. */
+  -webkit-tap-highlight-color: transparent;
+}
+
+.app-frame {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.app-panel {
+  position: relative;
+  width: 100%;
+  max-width: var(--panel-width);
+  height: calc(100dvh - 2 * var(--panel-inset));
+  border-radius: var(--panel-radius);
+  background: var(--color-surface);
+  overflow: hidden;
+  /* Fixed header, scrolling middle, fixed bar. `minmax(0, 1fr)` and not `1fr`:
+     a plain 1fr row refuses to shrink below its content and the scroller never
+     scrolls, it just pushes the bar off screen. */
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  /* Landscape handsets have side insets too. Once the panel is inset, the inset
+     already clears them, so this collapses to zero on desktop. */
+  padding-left: max(0px, calc(env(safe-area-inset-left) - var(--panel-inset)));
+  padding-right: max(0px, calc(env(safe-area-inset-right) - var(--panel-inset)));
+}
+
+@media (min-width: 480px) and (min-height: 560px) {
+  .app-panel {
+    border: 1px solid var(--color-line);
+    box-shadow: 0 24px 80px -24px rgb(0 0 0 / 0.55);
+  }
+}
+
+/* Same trick vertically: the notch only needs padding while the panel is
+   full-bleed. */
+.app-header {
+  padding-top: max(0px, calc(env(safe-area-inset-top) - var(--panel-inset)));
+}
+
+.app-bar {
+  padding-bottom: max(0px, calc(env(safe-area-inset-bottom) - var(--panel-inset)));
+}
+
+.app-scroll {
+  overflow-y: auto;
+  /* Reaching the end of the list must not start scrolling something behind it. */
+  overscroll-behavior: contain;
+}
+
+/*
+ * Chrome is furniture and should not be selectable — dragging across a header
+ * and highlighting it is a website tell. Results are the opposite: species names
+ * are the thing people copy out of this app.
+ */
+.app-header,
+.app-bar {
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 /* Tight tracking on headings is most of what reads as "precise". */
@@ -91,7 +192,10 @@ h2 {
   content: '';
   position: fixed;
   inset: 0;
-  z-index: 0;
+  /* Over everything in the normal stacking order, so it films the desktop
+     backdrop and the panel alike. Dialogs live in the top layer and stay above
+     it, which is the right answer anyway — a modal should read as unfilmed. */
+  z-index: 60;
   pointer-events: none;
   opacity: 0.035;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
@@ -122,4 +226,88 @@ h2 {
   .row-in {
     animation: none;
   }
+}
+
+/*
+ * Bottom sheet.
+ *
+ * Built on a real `<dialog>`, opened with `showModal()`. The focus trap, the
+ * inert background, Escape-to-close and the top-layer stacking are all things
+ * the platform already does correctly and that hand-rolled sheets get wrong.
+ * What is left here is only the geometry.
+ *
+ * It lands on the *panel's* bottom edge, not the window's, by reading the same
+ * `--panel-inset` the panel does.
+ */
+.sheet {
+  position: fixed;
+  inset: auto 0 var(--panel-inset) 0;
+  margin: 0 auto;
+  width: 100%;
+  max-width: var(--panel-width);
+  max-height: min(60dvh, calc(100dvh - 2 * var(--panel-inset) - 120px));
+  padding: 0;
+  border: 0;
+  border-top: 1px solid var(--color-line-strong);
+  border-radius: 20px 20px var(--panel-radius) var(--panel-radius);
+  background: var(--color-raised);
+  color: var(--color-ink);
+  overflow: hidden;
+  flex-direction: column;
+  padding-bottom: max(0px, calc(env(safe-area-inset-bottom) - var(--panel-inset)));
+}
+
+/*
+ * `display` belongs on the open state, not on the element.
+ *
+ * The browser hides a closed `<dialog>` with its own `display: none`, and a bare
+ * `.sheet { display: flex }` silently outranks it — which left an empty strip of
+ * sheet, grab handle and all, pinned over the action bar at all times. It was
+ * only visible in a screenshot; every functional assertion passed straight
+ * through it.
+ */
+.sheet[open] {
+  display: flex;
+}
+
+/* Capped at 60dvh so the spectrogram above it stays visible: the sheet exists to
+   annotate the picture, and covering the picture would defeat it. */
+
+.sheet::backdrop {
+  background: rgb(0 0 0 / 0.45);
+}
+
+.sheet[open] {
+  animation: sheet-in 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.sheet[open]::backdrop {
+  animation: backdrop-in 180ms ease-out;
+}
+
+@keyframes sheet-in {
+  from {
+    transform: translateY(100%);
+  }
+}
+
+@keyframes backdrop-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* The sheet still appears — only the travel is removed. Suppressing the whole
+     thing would hide the content, which is not what the preference asks for. */
+  .sheet[open],
+  .sheet[open]::backdrop {
+    animation: none;
+  }
+}
+
+/* While a drag is in progress the transform is written from JS every frame, so
+   the transition must be off; it comes back for the release. */
+.sheet-settling {
+  transition: transform 200ms cubic-bezier(0.16, 1, 0.3, 1);
 }

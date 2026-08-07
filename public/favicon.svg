@@ -1,7 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <rect width="32" height="32" rx="7" fill="#0a0a0a"/>
-  <!-- Three rising bars: a spectrogram column, not a literal bird. -->
-  <g fill="#fafafa">
+  <rect width="32" height="32" rx="7" fill="#0a0b14"/>
+  <!-- Three rising bars: a spectrogram column, not a literal bird. The gold is
+       the bright end of the spectrogram's own ramp. -->
+  <g fill="#efc373">
     <rect x="7"  y="17" width="4" height="8"  rx="2"/>
     <rect x="14" y="10" width="4" height="15" rx="2"/>
     <rect x="21" y="14" width="4" height="11" rx="2"/>
