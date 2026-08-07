@@ -41,13 +41,26 @@ class CaptureProcessor extends AudioWorkletProcessor {
   }
 
   process(inputs) {
-    const channel = inputs[0] && inputs[0][0]
+    const channels = inputs[0]
     // No input yet, or the track ended. Returning true keeps the node alive so
     // capture resumes if the device comes back.
-    if (!channel) return true
+    if (!channels || !channels.length || !channels[0]) return true
 
-    for (let i = 0; i < channel.length; i++) {
-      const sample = channel[i]
+    const count = channels.length
+    const first = channels[0]
+
+    for (let i = 0; i < first.length; i++) {
+      // Downmix by averaging, the same as the file path.
+      //
+      // \`channelCount: 1\` in the getUserMedia constraints is a *hint*; a source
+      // can still arrive with two channels. Reading channels[0] alone would take
+      // the left channel and silently drop anything panned right — the file path
+      // averages, and the README says it averages, so this must too.
+      let sample = first[i]
+      if (count > 1) {
+        for (let c = 1; c < count; c++) sample += channels[c][i]
+        sample /= count
+      }
       this.batch[this.filled++] = sample
       this.sumSquares += sample * sample
       this.counted++

@@ -17,6 +17,14 @@ export interface MicState {
   error: string | null
   /** Windows scored so far — the honest measure of progress while listening. */
   windows: number
+  /**
+   * Windows the model could not keep up with.
+   *
+   * Non-zero means this device is slower than real time at a 1 s hop, so some
+   * audio was never scored. Reporting it is the same rule as `truncatedWindows`
+   * on the file path: a short list must never look like a complete one.
+   */
+  dropped: number
 }
 
 const initial: MicState = {
@@ -25,6 +33,7 @@ const initial: MicState = {
   elapsed: 0,
   error: null,
   windows: 0,
+  dropped: 0,
 }
 
 function describeError(error: unknown): string {
@@ -80,7 +89,8 @@ export function useMicrophone(analyzer: BirdNetAnalyzer | null) {
       device is faster than the model. */
   const busyRef = useRef(false)
   const pendingRef = useRef<{ samples: Float32Array; offset: number } | null>(null)
-  const droppedRef = useRef(0)
+  /** Samples actually captured, which is what "listening for" means. */
+  const capturedRef = useRef(0)
 
   const stop = useCallback(() => {
     sessionRef.current++
@@ -97,6 +107,7 @@ export function useMicrophone(analyzer: BirdNetAnalyzer | null) {
     pendingRef.current = null
     busyRef.current = false
     levelRef.current = 0
+    capturedRef.current = 0
     setState((s) => (s.phase === 'error' ? s : { ...s, phase: 'idle' }))
   }, [])
 
@@ -126,6 +137,10 @@ export function useMicrophone(analyzer: BirdNetAnalyzer | null) {
 
       const context = new AudioContext({ sampleRate: SAMPLE_RATE })
       contextRef.current = context
+      // Normally already running, since this only ever happens inside a click —
+      // but a context created while the tab is backgrounded starts suspended,
+      // and a suspended context delivers no audio at all.
+      if (context.state === 'suspended') await context.resume()
 
       const url = createWorkletUrl()
       try {
@@ -156,16 +171,17 @@ export function useMicrophone(analyzer: BirdNetAnalyzer | null) {
         for (const window of windower.push(event.data.samples)) {
           // Newest wins. If the model falls behind, the useful thing to score is
           // what is happening now, not a backlog from ten seconds ago — and the
-          // count of what was skipped is reported rather than hidden.
+          // window it displaces is counted rather than lost quietly.
           if (busyRef.current) {
-            if (pendingRef.current) droppedRef.current++
+            if (pendingRef.current) setState((s) => ({ ...s, dropped: s.dropped + 1 }))
             pendingRef.current = window
             continue
           }
           void score(window, session)
         }
 
-        setState((s) => ({ ...s, elapsed: windower.streamOffset / SAMPLE_RATE }))
+        capturedRef.current += event.data.samples.length
+        setState((s) => ({ ...s, elapsed: capturedRef.current / SAMPLE_RATE }))
       }
 
       // The node has no output; connecting it to the destination would echo the

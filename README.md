@@ -455,6 +455,14 @@ Une seule boucle rAF, et **elle s'arrête à l'arrêt de la capture**. C'est le 
 P2 avait trouvé ; il n'est pas réintroduit. L'arrêt appelle aussi `track.stop()` : fermer
 l'`AudioContext` seul laisse le périphérique ouvert et le voyant d'enregistrement allumé.
 
+Le filtre géo-temporel s'applique **aussi** à l'écoute en direct. C'est un réglage global : le
+restreindre au mode fichier aurait donné un interrupteur affichant « activé » sans rien faire sur
+l'écran devant vous — exactement l'échec que le dépliant des espèces masquées existe pour empêcher.
+
+Si l'appareil n'arrive pas à suivre le direct, **la fenêtre la plus récente gagne** et celle qu'elle
+déplace est **comptée et affichée**, même règle que `truncatedWindows` côté fichier : une liste courte
+parce que la machine a décroché ne doit jamais ressembler à une liste complète.
+
 #### La capture
 
 `getUserMedia` avec **`echoCancellation`, `noiseSuppression` et `autoGainControl` explicitement à
@@ -465,9 +473,12 @@ P0, parce que le modèle normalise déjà chaque fenêtre lui-même.
 
 Le worklet est chargé depuis une **Blob URL construite d'une source inline** : `addModule()` est un
 fetch, pas un import, donc le bundler n'a pas son mot à dire. Après l'épisode `public/ort`, ne
-dépendre d'aucune résolution valait bien cette petite gymnastique. Il fait deux choses, parce que les
-échantillons sont déjà là : il **groupe** les blocs de 128 en paquets de 100 ms (375 messages/s
-deviennent 10) et il **calcule le RMS**. Il ne touche pas aux échantillons.
+dépendre d'aucune résolution valait bien cette petite gymnastique. Il fait trois choses, parce que
+les échantillons sont déjà là : il **groupe** les blocs de 128 en paquets de 100 ms (375 messages/s
+deviennent 10), il **calcule le RMS**, et il **moyenne les canaux** — `channelCount: 1` n'est qu'une
+*indication*, une source peut arriver en stéréo, et lire `channels[0]` seul prendrait le canal gauche
+en jetant silencieusement ce qui est panoramiqué à droite. Le chemin fichier moyenne, donc celui-ci
+moyenne. À part ça il ne touche pas aux échantillons.
 
 Fenêtre de 3 s, **hop d'une seconde** : un oiseau qui chante maintenant est noté en ~3,1 s au lieu de
 6. Cela coûte trois inférences par seconde d'audio au lieu d'une, soit ~10 % d'un cœur aux ~100 ms

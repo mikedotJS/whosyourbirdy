@@ -695,6 +695,24 @@ async function main() {
       `${windowCount} windows in ~32 s of listening`,
     )
 
+    // The geo filter is one global control, so it has to act on this screen too.
+    // It did not, at first: the partition was applied to the file list only, and
+    // the switch said "on" while doing nothing here.
+    const beforeFilter = await page.locator(ROWS).count()
+    await page.click('text=Lieu et saison')
+    await page.waitForSelector('dialog.sheet[open] #geo-latitude')
+    await page.locator('dialog.sheet[open] input[type=checkbox]').first().check()
+    await page.waitForTimeout(1500)
+    await page.keyboard.press('Escape')
+    await page.waitForTimeout(500)
+    const afterFilter = await page.locator(ROWS).count()
+    const liveMasked = await page.locator('details summary').count()
+    check(
+      'the geo filter applies to live listening, not only to files',
+      afterFilter < beforeFilter && liveMasked === 1,
+      `${beforeFilter} → ${afterFilter} species, masked disclosure present: ${liveMasked === 1}`,
+    )
+
     await page.click('[aria-label="Arrêter l\'écoute"]')
     await page.waitForTimeout(500)
     const stoppedDraws = await page.evaluate(

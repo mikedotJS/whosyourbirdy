@@ -104,26 +104,12 @@ export default function App() {
     return result
   }, [visible])
 
-  /**
-   * The geo filter partitions the species; it does not silently shorten the list.
-   *
-   * BirdNET's own semantics are a hard cut — `invalid_mask = res < min_confidence`
-   * — so a filtered species really is out of the results, and the spectrogram and
-   * the counts have to agree with that. What this app adds is that the removed
-   * ones stay reachable, with the geo score that removed them. A filter that
-   * makes a detection disappear without saying so is exactly what the rest of
-   * this project refuses.
-   */
-  const { groups, maskedGroups } = useMemo(() => {
-    const mask = geo.settings.enabled ? geo.mask : null
-    if (!mask) return { groups: allGroups, maskedGroups: [] as SpeciesGroup[] }
-    const kept: SpeciesGroup[] = []
-    const removed: SpeciesGroup[] = []
-    for (const group of allGroups) {
-      (mask[group.species.index] ? kept : removed).push(group)
-    }
-    return { groups: kept, maskedGroups: removed }
-  }, [allGroups, geo.mask, geo.settings.enabled])
+  const geoMask = geo.settings.enabled ? geo.mask : null
+
+  const { groups, maskedGroups } = useMemo(
+    () => partitionByGeo(allGroups, geoMask),
+    [allGroups, geoMask],
+  )
 
   /**
    * The detections that survive both filters, which is what the picture and the
@@ -158,7 +144,20 @@ export default function App() {
     return result
   }, [mic.detections])
 
-  const shownGroups = mode === 'live' ? liveGroups : groups
+  /**
+   * Live listening obeys the same filter.
+   *
+   * The setting is one global control, so scoping it to file mode would mean a
+   * switch that says "on" while quietly doing nothing on the screen in front of
+   * you — the exact failure the masked-species disclosure exists to prevent.
+   */
+  const { groups: liveKept, maskedGroups: liveMasked } = useMemo(
+    () => partitionByGeo(liveGroups, geoMask),
+    [liveGroups, geoMask],
+  )
+
+  const shownGroups = mode === 'live' ? liveKept : groups
+  const shownMasked = mode === 'live' ? liveMasked : maskedGroups
 
   // A focused species the threshold has just filtered out would leave the
   // spectrogram highlighting nothing and the sheet describing nobody.
@@ -327,14 +326,21 @@ export default function App() {
                 phase={mic.phase}
                 levelRef={mic.levelRef}
                 elapsed={mic.elapsed}
-                species={liveGroups.length}
+                species={liveKept.length}
                 error={mic.error}
-                revealKey={liveGroups.length}
+                dropped={mic.dropped}
+                revealKey={liveKept.length}
                 onStart={() => void mic.start()}
                 onStop={mic.stop}
               />
+              <GeoRow geo={geo} masked={liveMasked.length} onOpen={() => setGeoOpen(true)} />
+
+              {liveMasked.length > 0 && (
+                <MaskedSpecies groups={liveMasked} scores={geo.scores} />
+              )}
+
               <SpeciesList
-                groups={liveGroups}
+                groups={liveKept}
                 pinned={pinned}
                 hovered={hovered}
                 playingSpecies={null}
@@ -453,7 +459,7 @@ export default function App() {
         open={geoOpen}
         onClose={() => setGeoOpen(false)}
         geo={geo}
-        masked={maskedGroups.length}
+        masked={shownMasked.length}
       />
 
       <OccurrenceSheet
@@ -569,6 +575,28 @@ function MaskedSpecies({
       </ul>
     </details>
   )
+}
+
+/**
+ * Split species into the ones the geo filter keeps and the ones it removes.
+ *
+ * BirdNET's own semantics are a hard cut — `invalid_mask = res < min_confidence`
+ * — so a filtered species really is out of the results. What this app adds is
+ * that the removed ones stay reachable, with the geo score that removed them. A
+ * filter that makes a detection disappear without saying so is exactly what the
+ * rest of this project refuses.
+ */
+function partitionByGeo(
+  all: SpeciesGroup[],
+  mask: Uint8Array | null,
+): { groups: SpeciesGroup[]; maskedGroups: SpeciesGroup[] } {
+  if (!mask) return { groups: all, maskedGroups: [] }
+  const kept: SpeciesGroup[] = []
+  const removed: SpeciesGroup[] = []
+  for (const group of all) {
+    (mask[group.species.index] ? kept : removed).push(group)
+  }
+  return { groups: kept, maskedGroups: removed }
 }
 
 /** Fichier / Micro. A segmented control, in the bar's long-reserved left slot. */

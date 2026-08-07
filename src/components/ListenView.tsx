@@ -7,6 +7,8 @@ interface Props {
   levelRef: React.RefObject<number>
   elapsed: number
   species: number
+  /** Windows the model could not keep up with. Zero on anything modern. */
+  dropped: number
   error: string | null
   /**
    * Bumped when a new species is found. The ring flashes on the change — the
@@ -65,17 +67,32 @@ function cssColour(name: string, fallback: string): string {
  * One rAF loop, and it stops when capture stops. That was the defect the P2
  * review found; it is not being reintroduced here.
  */
-export function ListenView({ phase, levelRef, elapsed, species, error, revealKey, onStart, onStop }: Props) {
+export function ListenView({
+  phase,
+  levelRef,
+  elapsed,
+  species,
+  dropped,
+  error,
+  revealKey,
+  onStart,
+  onStop,
+}: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState(0)
   const reduced = useReducedMotion()
   const listening = phase === 'listening'
-  /** Read inside the animation loop, so a reveal does not restart the loop. */
-  const revealRef = useRef({ key: revealKey, at: 0 })
-  if (revealRef.current.key !== revealKey) {
-    revealRef.current = { key: revealKey, at: performance.now() }
-  }
+  /**
+   * Read inside the animation loop, so a reveal does not restart the loop.
+   * Stamped from an effect rather than from the render body: writing a ref
+   * during render is a hazard under StrictMode's double invocation, and this
+   * app renders inside one.
+   */
+  const revealRef = useRef({ at: 0 })
+  useEffect(() => {
+    if (revealKey > 0) revealRef.current.at = performance.now()
+  }, [revealKey])
 
   useEffect(() => {
     const element = wrapRef.current
@@ -248,6 +265,14 @@ export function ListenView({ phase, levelRef, elapsed, species, error, revealKey
                 ? 'aucune espèce pour l’instant'
                 : `${species} espèce${species > 1 ? 's' : ''} trouvée${species > 1 ? 's' : ''}`}
             </p>
+            {/* Same rule as `truncatedWindows` on the file path: a list that is
+                short because the device could not keep up must say so. */}
+            {dropped > 0 && (
+              <p className="max-w-[30ch] text-xs text-ink-3">
+                {dropped} fenêtre{dropped > 1 ? 's' : ''} non analysée
+                {dropped > 1 ? 's' : ''} — cet appareil n'arrive pas à suivre le direct.
+              </p>
+            )}
           </>
         )}
         {error && (
