@@ -40,7 +40,7 @@ export function SpeciesList({ groups, pinned, hovered, playing, onPin, onHover, 
   if (groups.length === 0) return null
 
   return (
-    <ul className="flex flex-col divide-y divide-neutral-200 dark:divide-neutral-800">
+    <ul id="species-list" className="flex flex-col divide-y divide-line">
       {groups.map((group, index) => {
         const isPinned = pinned?.index === group.species.index
         // The pin wins; hover only shows through when nothing is pinned.
@@ -63,25 +63,25 @@ export function SpeciesList({ groups, pinned, hovered, playing, onPin, onHover, 
               aria-controls={`occurrences-${group.species.index}`}
               className={[
                 'flex w-full items-center gap-3 py-2.5 text-left transition-colors',
-                isFocused ? 'bg-neutral-50 dark:bg-neutral-900' : 'hover:bg-neutral-50 dark:hover:bg-neutral-900',
+                isFocused ? 'bg-raised' : 'hover:bg-hover',
               ].join(' ')}
             >
               <span
                 aria-hidden
                 className={[
                   'h-8 w-1 shrink-0 rounded-full transition-colors',
-                  isFocused ? 'bg-[#2a78d6] dark:bg-[#3987e5]' : 'bg-neutral-400 dark:bg-neutral-600',
+                  isFocused ? 'bg-focus' : 'bg-line-strong',
                 ].join(' ')}
               />
 
               <span className="min-w-0 flex-1">
                 <span className="block truncate font-medium">{group.species.commonName}</span>
-                <span className="block truncate text-sm italic text-neutral-500 dark:text-neutral-400">
+                <span className="block truncate text-sm italic text-ink-3">
                   {group.species.scientificName}
                 </span>
               </span>
 
-              <span className="shrink-0 text-sm tabular-nums text-neutral-500 dark:text-neutral-400">
+              <span className="shrink-0 text-sm tabular-nums text-ink-3">
                 {group.count}×
               </span>
               <span className="w-10 shrink-0 text-right text-sm tabular-nums">
@@ -108,8 +108,8 @@ export function SpeciesList({ groups, pinned, hovered, playing, onPin, onHover, 
                           // that 12px text needs. Ink on the same orange is
                           // 6.6:1 and keeps the hue doing the signalling.
                           isPlaying
-                            ? 'bg-[#eb6834] text-neutral-950 dark:bg-[#d95926] dark:text-neutral-950'
-                            : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200 dark:bg-neutral-800 dark:text-neutral-200 dark:hover:bg-neutral-700',
+                            ? 'bg-play text-on-play'
+                            : 'bg-raised text-ink-2 hover:bg-hover hover:text-ink',
                         ].join(' ')}
                       >
                         {clock(occurrence.start)}

@@ -16,6 +16,12 @@ interface Props {
    * value so playback does not re-render the tree 60 times a second.
    */
   positionRef: React.RefObject<number | null>
+  /**
+   * Changes once per discrete seek. The ref above is invisible to React, so
+   * without this a keyboard scrub moved the audio and left the playhead painted
+   * where it was. Only in the dependency list — its value is never read.
+   */
+  positionVersion: number
   /** True only while sound is actually playing — drives the animation loop. */
   isPlaying: boolean
   onScrub: (seconds: number) => void
@@ -27,15 +33,16 @@ interface Props {
  * Colour decisions, in short (the long version is in the README):
  *
  *  - The spectrogram is a *sequential* encoding of magnitude, so it gets one
- *    ramp, light to dark — and that ramp is achromatic. Partly because grayscale
- *    is what a birder expects from Raven or Audacity, but mostly because it
- *    leaves the entire chromatic channel free for the overlay.
+ *    monotone ramp — night to gold. One hue family, moving in one direction, is
+ *    what makes it readable without a legend; a rainbow would not be.
  *  - Species identity is NOT carried by colour. There are 6522 possible classes;
  *    no palette survives that, and cycling hues would make two species share one.
  *    Identity lives in the list, and the link between list and picture is a
  *    single focused colour at a time.
  *  - Detection bands therefore have three states: recessive (present, not the
- *    focus), focused (slot-1 blue), and playing (slot-2 orange).
+ *    focus), focused (cool blue), and playing (coral). Both accents are checked
+ *    against the ramp, not only against the surface — an overlay that melts into
+ *    the picture's own bright end is not an overlay.
  */
 
 const AXIS_WIDTH = 34
@@ -47,32 +54,81 @@ const AXIS_HEIGHT = 18
  */
 const BAND_HEIGHT = 16
 
-// Validated against the app's own surfaces with the dataviz palette checker:
-// blue↔orange ΔE 24.7 light / 26.8 dark, both ≥3:1 on their surface.
+/**
+ * Palette « Aube ». Validated as a categorical pair against each surface with
+ * the dataviz checker: ΔE CVD 22.2 dark / 25.2 light, normal-vision 29.4 / 31.5,
+ * inside the lightness band, ≥3:1 on their surface.
+ *
+ * The focus accent is deliberately COOL. The spectrogram ramp climbs to gold, so
+ * a warm focus accent would sit on top of the picture's own brightest values and
+ * disappear into them.
+ */
 const COLORS = {
   light: {
-    focus: '#2a78d6',
-    playing: '#eb6834',
-    // Solid, not translucent: this colour is drawn under a globalAlpha, and the
-    // two alphas multiplied down to 0.16 — a 1.6:1 contrast for the default
-    // state of every detection, where WCAG 1.4.11 wants 3:1 for a graphical
-    // object. Opacity now lives in exactly one place.
-    band: '#0b0b0b',
-    ink: '#0b0b0b',
-    // #898781 measured 3.59:1 on white; these are 10px labels.
-    muted: '#52514e',
-    grid: 'rgba(252, 252, 251, 0.22)',
-    unanalysed: 'rgba(255, 255, 255, 0.55)',
+    focus: '#2a6fd6',
+    playing: '#c9492f',
+    // Solid, not translucent: this colour is drawn under a globalAlpha, and two
+    // alphas multiplied down to 0.16 — a 1.6:1 contrast for the default state of
+    // every detection, where WCAG 1.4.11 wants 3:1. Opacity lives in one place.
+    band: '#14131a',
+    ink: '#14131a',
+    muted: '#6b6878',
+    grid: 'rgba(251, 250, 246, 0.30)',
+    unanalysed: 'rgba(251, 250, 246, 0.58)',
   },
   dark: {
-    focus: '#3987e5',
-    playing: '#d95926',
-    band: '#fafafa',
-    ink: '#fafafa',
-    muted: '#a3a29c',
-    grid: 'rgba(250, 250, 250, 0.16)',
-    unanalysed: 'rgba(10, 10, 10, 0.6)',
+    focus: '#3e8fdb',
+    playing: '#e05c42',
+    band: '#f4f2ec',
+    ink: '#f4f2ec',
+    muted: '#9a98a8',
+    grid: 'rgba(244, 242, 236, 0.16)',
+    unanalysed: 'rgba(10, 11, 20, 0.62)',
   },
+}
+
+/**
+ * The spectrogram's sequential ramp, « nuit → or ».
+ *
+ * One hue family throughout — night, ember, amber, pale gold — so it stays a
+ * legitimate sequential encoding rather than a rainbow. Light mode runs the same
+ * hue the other way: paper down to deep bronze, because there high magnitude has
+ * to be *dark* to read on a light surface.
+ *
+ * 256 entries built once per theme; the per-pixel loop then costs one lookup.
+ */
+const RAMP_STOPS = {
+  dark: [
+    [0.0, 0x0a, 0x0b, 0x14],
+    [0.28, 0x3a, 0x22, 0x2c],
+    [0.55, 0x8c, 0x4d, 0x2e],
+    [0.8, 0xef, 0xc3, 0x73],
+    [1.0, 0xff, 0xf1, 0xd2],
+  ],
+  light: [
+    [0.0, 0xfb, 0xfa, 0xf6],
+    [0.25, 0xe8, 0xd8, 0xb4],
+    [0.55, 0xc0, 0x8a, 0x3c],
+    [0.8, 0x7a, 0x4c, 0x14],
+    [1.0, 0x2e, 0x1d, 0x08],
+  ],
+} as const
+
+function buildRamp(theme: 'light' | 'dark'): Uint8Array {
+  const stops = RAMP_STOPS[theme]
+  const ramp = new Uint8Array(256 * 3)
+  for (let i = 0; i < 256; i++) {
+    const t = i / 255
+    let k = 0
+    while (k < stops.length - 2 && t > stops[k + 1][0]) k++
+    const [t0, r0, g0, b0] = stops[k]
+    const [t1, r1, g1, b1] = stops[k + 1]
+    const f = t1 === t0 ? 0 : (t - t0) / (t1 - t0)
+    ramp[i * 3] = Math.round(r0 + (r1 - r0) * f)
+    ramp[i * 3 + 1] = Math.round(g0 + (g1 - g0) * f)
+    ramp[i * 3 + 2] = Math.round(b0 + (b1 - b0) * f)
+  }
+  return ramp
 }
 
 /** Honour the OS setting: every animation below collapses to its end state. */
@@ -131,7 +187,7 @@ function useSpectrogramBitmap(
     if (!ctx) return null
 
     const image = ctx.createImageData(columns, bins)
-    const dark = theme === 'dark'
+    const ramp = buildRamp(theme)
 
     for (let c = 0; c < columns; c++) {
       for (let b = 0; b < bins; b++) {
@@ -139,14 +195,11 @@ function useSpectrogramBitmap(
         // the bottom of the picture.
         const y = bins - 1 - b
         const target = (y * columns + c) * 4
-        const v = magnitudes[c * bins + b]
+        const v = magnitudes[c * bins + b] * 3
 
-        // One achromatic ramp. On dark the ink is light-on-dark, on light it is
-        // dark-on-light — the encoding is the same, the ends are swapped.
-        const level = dark ? v : 255 - v
-        image.data[target] = level
-        image.data[target + 1] = level
-        image.data[target + 2] = level
+        image.data[target] = ramp[v]
+        image.data[target + 1] = ramp[v + 1]
+        image.data[target + 2] = ramp[v + 2]
         image.data[target + 3] = 255
       }
     }
@@ -162,6 +215,7 @@ export function Spectrogram({
   analysedUntil,
   duration,
   positionRef,
+  positionVersion,
   isPlaying,
   onScrub,
 }: Props) {
@@ -441,7 +495,7 @@ export function Spectrogram({
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current)
       rafRef.current = null
     }
-  }, [draw, analysedUntil, focused, detections, isPlaying])
+  }, [draw, analysedUntil, focused, detections, isPlaying, positionVersion])
 
   const handlePointer = (event: React.PointerEvent) => {
     const rect = event.currentTarget.getBoundingClientRect()
@@ -472,7 +526,7 @@ export function Spectrogram({
     <figure className="flex flex-col gap-2">
       <div
         ref={wrapRef}
-        className="relative h-72 w-full cursor-crosshair touch-none select-none rounded-sm outline-offset-2 focus-visible:outline-2 focus-visible:outline-[#2a78d6] dark:focus-visible:outline-[#3987e5]"
+        className="relative h-72 w-full cursor-crosshair touch-none select-none rounded-sm outline-offset-2 focus-visible:outline-2 focus-visible:outline-focus"
         onPointerMove={(e) => {
           const time = handlePointer(e)
           setHoverTime(time)
@@ -515,7 +569,7 @@ export function Spectrogram({
         />
         {hoverTime !== null && (
           <span
-            className="pointer-events-none absolute top-1 rounded bg-neutral-900/85 px-1.5 py-0.5 text-[10px] tabular-nums text-white dark:bg-neutral-100/90 dark:text-neutral-900"
+            className="pointer-events-none absolute top-1 rounded bg-ink/90 px-1.5 py-0.5 text-[10px] tabular-nums text-surface"
             style={{ left: Math.min(timeToX(hoverTime) + 6, size.width - 44) }}
           >
             {clock(hoverTime)}

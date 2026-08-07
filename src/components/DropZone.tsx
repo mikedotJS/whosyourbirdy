@@ -33,18 +33,18 @@ export function DropZone({ onFile }: Props) {
       className={[
         'flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed px-6 py-16 text-center transition-colors',
         over
-          ? 'border-neutral-900 bg-neutral-50 dark:border-neutral-100 dark:bg-neutral-900'
-          : 'border-neutral-300 dark:border-neutral-700',
+          ? 'border-focus bg-raised'
+          : 'border-line',
       ].join(' ')}
     >
       <p className="text-base">Déposez un enregistrement ici</p>
-      <p className="text-sm text-neutral-500 dark:text-neutral-400">
+      <p className="text-sm text-ink-3">
         wav, mp3, flac, m4a, ogg — idéalement en 48 kHz
       </p>
       <button
         type="button"
         onClick={() => inputRef.current?.click()}
-        className="mt-2 rounded-md bg-neutral-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-neutral-700 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300"
+        className="mt-2 rounded-md bg-ink px-4 py-2 text-sm font-medium text-surface transition-colors hover:opacity-90"
       >
         Choisir un fichier
       </button>

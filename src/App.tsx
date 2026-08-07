@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useBirdNet } from './hooks/useBirdNet'
+import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useSegmentPlayer } from './hooks/useSegmentPlayer'
-import { DEFAULT_MIN_CONFIDENCE } from './lib/birdnet/constants'
+import { DEFAULT_MIN_CONFIDENCE, WINDOW_SECONDS } from './lib/birdnet/constants'
 import type { Species } from './lib/birdnet/labels'
 import type { Detection } from './lib/birdnet/types'
 import { DropZone } from './components/DropZone'
@@ -102,13 +103,53 @@ export default function App() {
   const busy =
     state.phase === 'loading-model' || state.phase === 'decoding' || state.phase === 'analyzing'
 
+  // Space plays what the playhead is sitting on, preferring the focused
+  // species' own occurrences — pressing it with a species selected should not
+  // start some other bird. Failing that, the best detection in the file, so the
+  // shortcut always does something on a fresh result.
+  const togglePlay = useCallback(() => {
+    if (player.playing !== null) {
+      player.stop()
+      return
+    }
+    if (visible.length === 0) return
+    const at = player.positionRef.current ?? 0
+    const pool = focused ? visible.filter((d) => d.species.index === focused.index) : visible
+    const under = pool.find((d) => at >= d.start && at < d.start + WINDOW_SECONDS)
+    const best = pool.reduce((a, b) => (b.score > a.score ? b : a), pool[0])
+    const target = under ?? best
+    if (target) playDetection(target)
+  }, [player, visible, focused, playDetection])
+
+  const seekBy = useCallback(
+    (delta: number) => {
+      const at = player.positionRef.current ?? 0
+      player.seek(Math.max(0, Math.min(state.duration, at + delta)))
+    },
+    [player, state.duration],
+  )
+
+  const focusList = useCallback(() => {
+    const first = document.querySelector<HTMLButtonElement>('#species-list button')
+    first?.focus()
+  }, [])
+
+  const clearFocus = useCallback(() => setPinned(null), [])
+
+  useKeyboardShortcuts({
+    onTogglePlay: togglePlay,
+    onSeek: seekBy,
+    onFocusList: focusList,
+    onEscape: clearFocus,
+  })
+
   return (
-    <div className="min-h-dvh bg-white text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100">
-      <div className="mx-auto flex min-h-dvh max-w-4xl flex-col gap-6 px-6 py-10">
+    <div className="grain relative min-h-dvh bg-surface text-ink">
+      <div className="relative z-10 mx-auto flex min-h-dvh max-w-4xl flex-col gap-6 px-6 py-10">
         <header className="flex items-baseline justify-between gap-4">
           <div>
             <h1 className="text-xl font-medium tracking-tight">whosyourbirdy</h1>
-            <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
+            <p className="mt-1 text-sm text-ink-3">
               Identification d'oiseaux au chant. Tout se passe dans votre navigateur — aucun fichier
               n'est envoyé.
             </p>
@@ -117,7 +158,7 @@ export default function App() {
             <button
               type="button"
               onClick={handleReset}
-              className="shrink-0 rounded-md border border-neutral-300 px-3 py-1.5 text-sm text-neutral-600 transition-colors hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-900"
+              className="shrink-0 rounded-md border border-line px-3 py-1.5 text-sm text-ink-2 transition-colors duration-150 hover:border-line-strong hover:bg-hover"
             >
               Autre fichier
             </button>
@@ -131,7 +172,7 @@ export default function App() {
             <div className="flex items-baseline gap-3 text-sm">
               <span className="truncate font-medium">{file.name}</span>
               {state.duration > 0 && (
-                <span className="shrink-0 tabular-nums text-neutral-500 dark:text-neutral-400">
+                <span className="shrink-0 tabular-nums text-ink-3">
                   {formatDuration(state.duration)}
                 </span>
               )}
@@ -141,6 +182,18 @@ export default function App() {
           {/* The picture arrives before the first window, so the analysis front
               advances across something already on screen. */}
           {state.spectrogram && (
+            /* The only ambient light in the interface, and it sits behind the
+               one object that earns it. */
+            <div className="relative">
+              <div
+                aria-hidden
+                className="pointer-events-none absolute -inset-x-6 -inset-y-4 -z-10 rounded-lg opacity-60 blur-2xl"
+                style={{
+                  background:
+                    'radial-gradient(60% 70% at 50% 55%, var(--color-gold) 0%, transparent 70%)',
+                  opacity: 0.09,
+                }}
+              />
             <Spectrogram
               spectrogram={state.spectrogram}
               detections={visible}
@@ -148,9 +201,11 @@ export default function App() {
               analysedUntil={state.analysedUntil}
               duration={state.duration}
               positionRef={player.positionRef}
+              positionVersion={player.positionVersion}
               isPlaying={player.playing !== null}
               onScrub={player.seek}
             />
+            </div>
           )}
 
           {busy && <ProgressPanel state={state} />}
@@ -158,7 +213,7 @@ export default function App() {
           {state.phase === 'error' && (
             <div
               role="alert"
-              className="rounded-lg border border-red-300 bg-red-50 p-4 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300"
+              className="rounded-lg border border-play/40 bg-play/10 p-4 text-sm text-ink"
             >
               <p className="font-medium">L'analyse a échoué</p>
               <p className="mt-1">{state.error}</p>
@@ -177,7 +232,7 @@ export default function App() {
                 />
               )}
 
-              <div className="flex items-baseline justify-between text-sm text-neutral-500 dark:text-neutral-400">
+              <div className="flex items-baseline justify-between text-sm text-ink-3">
                 <span role="status" aria-live="polite">
                   {state.detections.length === 0
                     ? 'Aucun oiseau détecté dans cet enregistrement'
@@ -190,7 +245,7 @@ export default function App() {
               </div>
 
               {state.truncatedWindows > 0 && (
-                <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+                <p className="rounded-md bg-gold/10 px-3 py-2 text-xs text-ink-2">
                   {state.truncatedWindows} fenêtre(s) ont produit plus de détections que la limite
                   par fenêtre : la liste est incomplète à ce seuil.
                 </p>

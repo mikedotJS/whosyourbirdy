@@ -1,11 +1,100 @@
-@import "tailwindcss";
+@import 'tailwindcss';
+@import '@fontsource-variable/inter';
+
+/*
+ * Direction artistique « Aube ».
+ *
+ * Dark-first: the night surface is the default and light is a *selected*
+ * variant, not an inversion — every step below was chosen against its own
+ * surface and measured, never flipped.
+ *
+ * The colour rule that survives from P0 unchanged: colour never encodes species.
+ * There are 6522 classes. What the palette carries is attention — one focused
+ * hue at a time — and material. Every value here was checked with the dataviz
+ * validator or a contrast measurement; none of it was picked by eye.
+ */
+
+@theme {
+  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
+
+  /* Surfaces — depth comes from stacking, not from drop shadows. */
+  --color-surface: #0a0b14;
+  --color-raised: #101220;
+  --color-hover: #171a2a;
+  --color-line: rgb(200 190 235 / 0.1);
+  --color-line-strong: rgb(200 190 235 / 0.18);
+
+  /* Ink. 17.5:1 / 9.9:1 / 6.9:1 on the night surface. */
+  --color-ink: #f4f2ec;
+  --color-ink-2: #b9b7c6;
+  --color-ink-3: #9a98a8;
+
+  /* The two accents. Validated as a categorical pair against #0a0b14:
+     ΔE CVD 22.2, normal-vision 29.4, both inside the dark lightness band. */
+  --color-focus: #3e8fdb;
+  --color-play: #e05c42;
+  /* Text that sits ON the coral: near-black measures 5.40:1 there, white only
+     3.63:1 — the opposite of the light mode below. */
+  --color-on-play: #0a0b14;
+
+  /* Dawn gold: the spectrogram ramp's bright end, and the only ambient light. */
+  --color-gold: #efc373;
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --color-surface: #fbfaf6; /* warm paper */
+    --color-raised: #ffffff;
+    --color-hover: #f2efe7;
+    --color-line: rgb(30 25 15 / 0.12);
+    --color-line-strong: rgb(30 25 15 / 0.2);
+
+    --color-ink: #14131a;
+    --color-ink-2: #4a4756;
+    --color-ink-3: #6b6878; /* 5.19:1; #7a7788 measured 4.17 and was dropped */
+
+    --color-focus: #2a6fd6;
+    --color-play: #c9492f;
+    /* Reversed from dark on purpose: white is 4.69:1 here, near-black 4.18:1. */
+    --color-on-play: #ffffff;
+
+    --color-gold: #8a5a12;
+  }
+}
 
 :root {
-  color-scheme: light dark;
+  color-scheme: dark light;
 }
 
 body {
-  @apply bg-white text-neutral-900 antialiased dark:bg-neutral-950 dark:text-neutral-100;
+  @apply bg-surface text-ink antialiased;
+  font-synthesis-weight: none;
+  text-rendering: optimizeLegibility;
+}
+
+/* Tight tracking on headings is most of what reads as "precise". */
+h1,
+h2 {
+  letter-spacing: -0.02em;
+}
+
+/*
+ * Grain. Breaks the flatness of large dark fills, which otherwise band on cheap
+ * panels. Fixed, non-interactive, and low enough not to touch contrast — it sits
+ * at 3.5% over a surface whose text already clears 6.9:1 at its weakest.
+ */
+.grain::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
 /*
@@ -14,8 +103,14 @@ body {
  * busy recording does not make the last row wait a second.
  */
 @keyframes row-in {
-  from { opacity: 0; transform: translateY(-3px); }
-  to   { opacity: 1; transform: none; }
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 .row-in {

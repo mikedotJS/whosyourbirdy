@@ -251,15 +251,55 @@ au-dessus d'un spectrogramme, c'est du bruit, pas de l'information.
 L'identité vit donc dans la **liste** (du texte), et le lien liste ↔ image passe par **une seule
 couleur focalisée à la fois**. Concrètement :
 
-- **Spectrogramme** : encodage *séquentiel* d'une magnitude → une seule rampe, claire vers foncée, et
-  **achromatique**. C'est aussi la convention en bioacoustique (Raven, Audacity), mais surtout ça
-  libère tout le canal chromatique pour la superposition.
-- **Bandes de détection** : trois états — discrète (présente), focalisée (bleu), en lecture (orange).
+- **Spectrogramme** : encodage *séquentiel* d'une magnitude → **une seule rampe monotone**, nuit vers
+  or. Une rampe séquentielle n'est pas une case catégorielle : elle n'a le droit de varier que dans
+  un sens, et c'est ce qui la rend lisible sans légende. Sa séparation avec les deux accents est
+  vérifiée (pire paire ΔE CVD 13,3, au-dessus de la cible de 8), donc une bande posée dessus reste
+  une bande et non une zone plus chaude de l'image.
+- **Bandes de détection** : trois états — discrète (présente), focalisée (bleu), en lecture (corail).
   La confiance passe par l'**opacité**, pas par la teinte, avec un plancher à 0,45 pour que même la
-  bande la moins confiante tienne le 3:1 exigé par WCAG 1.4.11 sur un objet graphique (mesuré 3,42:1
-  en clair, 4,43:1 en sombre).
-- Les deux teintes sont validées contre les surfaces réelles de l'application : ΔE 24,7 en clair /
-  26,8 en sombre, ≥ 3:1 sur leur fond dans les deux modes.
+  bande la moins confiante tienne le 3:1 exigé par WCAG 1.4.11 sur un objet graphique.
+- Les deux accents sont validés comme **paire catégorielle** contre les surfaces réelles :
+  ΔE CVD 22,2 en sombre / 25,2 en clair, ΔE vision normale 29,4 / 31,5, bande de luminosité
+  respectée, ≥ 3:1 sur leur fond dans les deux modes.
+
+### Direction artistique « Aube »
+
+Sombre par défaut, clair en variante **choisie** — chaque valeur a été mesurée contre sa propre
+surface, jamais obtenue en inversant l'autre. Ce qui a été mesuré plutôt que supposé :
+
+| | Sombre `#0A0B14` | Clair `#FBFAF6` |
+|---|---|---|
+| Encre / secondaire / tertiaire | 17,5 : 1 · 9,95 : 1 · 6,94 : 1 | 17,67 : 1 · 8,64 : 1 · 5,19 : 1 |
+| Focus (espèce sélectionnée) | `#3E8FDB` | `#2A6FD6` |
+| Lecture (segment joué) | `#E05C42` | `#C9492F` |
+| Texte **sur** l'accent de lecture | quasi-noir, 5,40 : 1 | blanc, 4,69 : 1 |
+
+La dernière ligne est contre-intuitive et c'est pour ça qu'elle est un token (`--color-on-play`) :
+sur le corail sombre le blanc ne mesure que 3,63 : 1 et échoue, sur le corail clair c'est le
+quasi-noir qui échoue à 4,18 : 1. Le réflexe « texte clair sur couleur » aurait produit une des deux
+combinaisons ratées. Dans le même esprit, `#7A7788` a été écarté du texte tertiaire clair à 4,17 : 1
+au profit de `#6B6878`.
+
+Le premier jet de la palette **a échoué** la validation : les deux accents tombaient en luminosité
+0,70–0,84 alors que la bande utilisable sur fond sombre est 0,48–0,67. Ils ont été redescendus, pas
+conservés parce qu'ils étaient jolis.
+
+Inter variable est **auto-hébergé** (48 Ko en latin) : le projet doit fonctionner hors ligne, donc
+aucune police de CDN. Le grain SVG (`feTurbulence`, 3,5 %) casse le banding des aplats sombres sur
+les dalles bon marché ; à cette opacité il ne touche pas les contrastes ci-dessus. C'est le seul
+ornement, et la lueur dorée ambiante ne se pose que derrière le spectrogramme — le seul objet qui la
+mérite.
+
+### Clavier
+
+`espace` lecture/pause du segment sous la tête de lecture, `←/→` déplacent de 3 s (une fenêtre
+d'analyse), `⇧←/→` de 10 s, `/` met le focus sur la liste, `Échap` désélectionne.
+
+Trois garde-fous, parce qu'un raccourci global se met vite en travers : il n'agit jamais quand le
+focus est dans un champ de saisie, jamais quand l'évènement a déjà été traité plus près de
+l'utilisateur (`defaultPrevented` — le spectrogramme gère lui-même les flèches quand il a le focus,
+il n'y a pas deux implémentations), et jamais sous une boîte de dialogue ouverte.
 
 Le spectrogramme d'affichage est une STFT ordinaire (trames de 1024, 0–15 kHz, échelle dB avec
 normalisation par percentiles). **Il n'a rien à voir avec les mel-spectrogrammes du modèle**, qui

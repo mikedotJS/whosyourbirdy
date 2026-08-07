@@ -6,12 +6,12 @@ import { ATTRIBUTION, ATTRIBUTION_URL, MODEL_LICENSE } from '../lib/birdnet/cons
  */
 export function Attribution() {
   return (
-    <footer className="border-t border-neutral-200 pt-4 text-xs leading-relaxed text-neutral-500 dark:border-neutral-800">
+    <footer className="border-t border-line pt-4 text-xs leading-relaxed text-ink-3">
       <a
         href={ATTRIBUTION_URL}
         target="_blank"
         rel="noreferrer"
-        className="underline underline-offset-2 hover:text-neutral-900 dark:hover:text-neutral-100"
+        className="underline underline-offset-2 transition-colors hover:text-ink"
       >
         {ATTRIBUTION}
       </a>

@@ -286,6 +286,80 @@ async function main() {
       `${draws} repaints in 1.2 s with a parked playhead`,
     )
 
+    // Keyboard shortcuts. Driven from outside the spectrogram on purpose: the
+    // canvas has its own arrow handler, so pressing keys while it holds focus
+    // would exercise that path and never the global one. Placed after the
+    // repaint count, because focusing a species starts a fade and would spend
+    // that budget.
+    await page.keyboard.press('/')
+    const listFocus = await page.evaluate(() => {
+      const el = document.activeElement
+      return { tag: el?.tagName ?? '', inList: el?.closest('#species-list') !== null }
+    })
+    check(
+      '`/` moves focus into the species list',
+      listFocus.tag === 'BUTTON' && listFocus.inList,
+      `${listFocus.tag}, in list: ${listFocus.inList}`,
+    )
+
+    // Arrows must move the *painted* playhead, not just the audio element.
+    // Reading aria-valuenow catches a seek that writes to a ref nobody re-reads,
+    // which is exactly what happened before `positionVersion` existed: the sound
+    // moved, the picture did not, and the slider kept reporting the old second.
+    const readPosition = async () =>
+      Number(await page.locator('[role=slider]').getAttribute('aria-valuenow'))
+    const before = await readPosition()
+    await page.keyboard.press('ArrowLeft')
+    await page.waitForTimeout(120)
+    const oneWindowBack = await readPosition()
+    await page.keyboard.press('Shift+ArrowLeft')
+    await page.waitForTimeout(120)
+    const tenBack = await readPosition()
+    check(
+      'arrows scrub by one window, Shift by ten seconds',
+      before - oneWindowBack === 3 && oneWindowBack - tenBack === 10,
+      `${before} → ${oneWindowBack} → ${tenBack}`,
+    )
+
+    // Space must still activate whatever holds focus — it is the native key for
+    // a button, and a global shortcut that swallows it makes the list unusable
+    // from the keyboard. Focus is on a species row here, so this press has to
+    // reach the row and toggle it, not start playback.
+    await page.keyboard.press('Space')
+    await page.waitForTimeout(200)
+    // Then move focus away. Hover-focus is released by the blur, so the
+    // occurrences only stay open if that press really reached the row and
+    // pinned it. If the shortcut had swallowed it, they would close here.
+    await page.locator('[role=slider]').focus()
+    await page.waitForTimeout(200)
+    const stillOpen = await page.locator(`${ROWS} ul button`).count()
+    check(
+      'space still activates the focused control instead of being swallowed',
+      stillOpen === 2,
+      `${stillOpen} occurrence chips after moving focus off the row`,
+    )
+
+    // With focus on the timeline instead, the same key is the play shortcut.
+    await page.keyboard.press('Space')
+    await page.waitForTimeout(700)
+    const playingChips = await page.locator('[aria-pressed=true]').count()
+    check('space starts playback when no control has focus', playingChips === 1, `${playingChips} chip playing`)
+    await page.keyboard.press('Space')
+    await page.waitForTimeout(300)
+    check(
+      'space stops it again',
+      (await page.locator('[aria-pressed=true]').count()) === 0,
+    )
+
+    // Escape releases the selection, which also puts the page back in the
+    // nothing-focused state the playback checks below start from.
+    await page.keyboard.press('Escape')
+    await page.waitForTimeout(250)
+    check(
+      'escape releases the selected species',
+      (await page.locator(`${ROWS} ul button`).count()) === 0,
+    )
+
     // The slider must filter in memory, not re-run the model.
     const t0 = Date.now()
     await page.locator('input[type=range]').fill('0.7')

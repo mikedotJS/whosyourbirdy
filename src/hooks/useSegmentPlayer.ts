@@ -35,6 +35,20 @@ export function useSegmentPlayer(file: File | null) {
    */
   const positionRef = useRef<number | null>(null)
   const frameRef = useRef<number | null>(null)
+  /**
+   * Bumped once per *discrete* position change — a scrub, a stop — and never
+   * during playback.
+   *
+   * The ref above is invisible to React by design, which is right while sound is
+   * running (the canvas reads it inside its own loop). It is wrong for a seek
+   * that happens with nothing playing: no state changed, so nothing re-rendered,
+   * so the playhead stayed where it was drawn and `aria-valuenow` kept reporting
+   * the old second. Keyboard scrubbing looked dead and lied to a screen reader;
+   * dragging only appeared to work because the drag sets other state on the way
+   * through. One state update per keypress costs nothing and does not
+   * reintroduce the per-frame re-render this ref exists to avoid.
+   */
+  const [positionVersion, setPositionVersion] = useState(0)
 
   useEffect(() => {
     if (!file) {
@@ -97,6 +111,7 @@ export function useSegmentPlayer(file: File | null) {
     audioRef.current?.pause()
     setPlaying(null)
     positionRef.current = null
+    setPositionVersion((v) => v + 1)
   }, [])
 
   /**
@@ -113,6 +128,7 @@ export function useSegmentPlayer(file: File | null) {
     if (!audio) return
     audio.currentTime = seconds
     positionRef.current = seconds
+    setPositionVersion((v) => v + 1)
   }, [])
 
   const play = useCallback(
@@ -159,5 +175,5 @@ export function useSegmentPlayer(file: File | null) {
     stopTracking()
   }, [])
 
-  return { play, stop, seek, playing, positionRef }
+  return { play, stop, seek, playing, positionRef, positionVersion }
 }

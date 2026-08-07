@@ -78,19 +78,19 @@ function Panel({
       <div className="flex items-baseline justify-between gap-4 text-sm">
         <span>{label}</span>
         {percent !== null && (
-          <span className="tabular-nums text-neutral-500 dark:text-neutral-400">{percent.toFixed(0)} %</span>
+          <span className="tabular-nums text-ink-3">{percent.toFixed(0)} %</span>
         )}
       </div>
-      <div className="h-1 overflow-hidden rounded-full bg-neutral-200 dark:bg-neutral-800">
+      <div className="h-1 overflow-hidden rounded-full bg-line">
         <div
           className={[
-            'h-full bg-neutral-900 dark:bg-neutral-100',
+            'h-full bg-ink',
             percent === null ? 'w-1/3 animate-pulse' : 'transition-[width] duration-150 ease-out',
           ].join(' ')}
           style={percent === null ? undefined : { width: `${percent}%` }}
         />
       </div>
-      {detail && <p className="text-xs text-neutral-500 dark:text-neutral-400">{detail}</p>}
+      {detail && <p className="text-xs text-ink-3">{detail}</p>}
     </div>
   )
 }
