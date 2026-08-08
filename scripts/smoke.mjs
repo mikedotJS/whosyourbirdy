@@ -29,6 +29,17 @@ const CHROMIUM = process.env.CHROMIUM_PATH ?? '/opt/pw-browsers/chromium'
 const shotsDir = process.argv.find((a) => a.startsWith('--shots='))?.slice(8) ?? join(ROOT, '.smoke')
 
 /**
+ * Serve the site under the same base path the build was made for.
+ *
+ * GitHub Pages project sites live at `/<repo>/`, and that configuration touches
+ * things a root-served build never exercises: the service worker's scope and its
+ * precache list, the model and ORT URLs, the manifest. Running the suite with
+ * `BASE_PATH=/whosyourbirdy/ pnpm smoke` tests what is actually deployed instead
+ * of a shape that only exists locally.
+ */
+const BASE = process.env.BASE_PATH ?? '/'
+
+/**
  * Golden values for the reference fixture, taken from the parity ground truth.
  * Exact counts and an exact top row are what make this test able to fail: a
  * dead slider, a shuffled list or a mis-mapped score all pass `rows > 0`.
@@ -125,7 +136,11 @@ function serve() {
   const server = createServer((req, res) => {
     const url = decodeURIComponent(req.url.split('?')[0])
     if (url === '/favicon.ico') return void res.writeHead(204).end()
-    const path = join(root, url === '/' ? '/index.html' : url)
+    // Anything outside the base is a 404, exactly as GitHub Pages would answer
+    // for a path belonging to another project site on the same domain.
+    if (!url.startsWith(BASE)) return void res.writeHead(404).end('not found')
+    const rest = url.slice(BASE.length)
+    const path = join(root, rest === '' ? 'index.html' : rest)
     if (path.startsWith(root) && existsSync(path) && !path.endsWith('/')) {
       res.writeHead(200, { 'content-type': MIME[path.slice(path.lastIndexOf('.'))] ?? 'application/octet-stream' })
       return void res.end(readFileSync(path))
@@ -176,7 +191,7 @@ async function main() {
     console.log('\n\x1b[1mUI smoke test\x1b[0m\n')
     // 127.0.0.1 is a secure context in Chromium, which is what lets the service
     // worker register over plain HTTP.
-    var base = `http://127.0.0.1:${port}`
+    var base = `http://127.0.0.1:${port}${BASE.replace(/\/$/, '')}`
     await page.goto(`${base}/`)
     await page.screenshot({ path: join(shotsDir, '1-idle.png') })
     check('page renders', (await page.locator('h1').textContent()) === 'whosyourbirdy')
@@ -752,12 +767,20 @@ async function main() {
 
     const manifestResponse = await pwaPage.goto(`${base}/manifest.webmanifest`)
     const manifest = JSON.parse(await manifestResponse.text())
+    // `start_url` and `scope` are relative, so they resolve against the
+    // manifest's own URL and land on this deployment wherever it is served
+    // from. Resolving them here rather than comparing strings is what makes the
+    // check meaningful: a hard-coded "/" would look fine on a domain root and
+    // install a broken shortcut from a GitHub Pages project subpath.
+    const startUrl = new URL(manifest.start_url, manifestResponse.url()).pathname
+    const scope = new URL(manifest.scope, manifestResponse.url()).pathname
     check(
-      'the manifest is served and describes a standalone app',
+      'the manifest is served and points at this deployment, wherever it is',
       manifestResponse.status() === 200 &&
         manifest.display === 'standalone' &&
-        manifest.start_url === '/',
-      `${manifestResponse.status()}, display ${manifest.display}`,
+        startUrl === BASE &&
+        scope === BASE,
+      `${manifestResponse.status()}, display ${manifest.display}, start_url → ${startUrl}, scope → ${scope}`,
     )
     // A rounded icon shipped as maskable is the classic mistake: Android crops
     // it a second time and eats the corners.

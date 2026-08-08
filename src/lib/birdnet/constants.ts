@@ -35,9 +35,18 @@ export const SIGMOID_CLIP = 15.0
 /** Overlap between consecutive windows, in seconds. BirdNET allows [0, 2.9]. */
 export const MAX_OVERLAP_SECONDS = 2.9
 
-export const MODEL_BASE_URL = '/models'
+/**
+ * Runtime asset roots, resolved against the deployment's base path.
+ *
+ * `import.meta.env.BASE_URL` is `/` in development and at the root of a domain,
+ * and `/whosyourbirdy/` when the site is served from a GitHub Pages project
+ * subpath. These two are fetched at runtime rather than imported, so the bundler
+ * never rewrites them — hard-coding a leading slash would 404 everything the
+ * moment the site moved off a domain root.
+ */
+export const MODEL_BASE_URL = `${import.meta.env.BASE_URL}models`
 
-export const ORT_WASM_PATH = '/ort/'
+export const ORT_WASM_PATH = `${import.meta.env.BASE_URL}ort/`
 
 /**
  * Required by CC BY-NC-SA 4.0 and shown permanently in the UI, not hidden in an

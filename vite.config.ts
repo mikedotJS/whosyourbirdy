@@ -76,9 +76,9 @@ const SW_TEMPLATE = resolve(__dirname, 'scripts/sw-template.js')
  * WASM runtime are cached at runtime, on first use. The parity harness is a
  * build entry, not part of the app, so it is excluded too.
  */
-function pwaAssets(): Plugin {
-  const STATIC = ['/favicon.svg', '/manifest.webmanifest']
-  const ICONS = ['192.png', '512.png', 'maskable-512.png'].map((n) => `/icons/icon-${n}`)
+function pwaAssets(base: string): Plugin {
+  const STATIC = ['favicon.svg', 'manifest.webmanifest']
+  const ICONS = ['192.png', '512.png', 'maskable-512.png'].map((n) => `icons/icon-${n}`)
 
   return {
     name: 'pwa-assets',
@@ -94,9 +94,11 @@ function pwaAssets(): Plugin {
         // The .jsep.wasm copy Rollup emits for the ORT import is 24 MB and is
         // served from /ort/ anyway.
         .filter((name) => !name.endsWith('.wasm'))
-        .map((name) => `/${name}`)
+        .map((name) => base + name)
 
-      const precache = [...new Set(['/index.html', ...emitted, ...STATIC, ...ICONS])].sort()
+      const precache = [
+        ...new Set([base + 'index.html', ...emitted, ...STATIC.map((n) => base + n), ...ICONS.map((n) => base + n)]),
+      ].sort()
 
       // Any change to the shell changes this, which is what retires the previous
       // cache in the worker's activate step.
@@ -111,6 +113,7 @@ function pwaAssets(): Plugin {
       ).version
 
       const source = readFileSync(SW_TEMPLATE, 'utf8')
+        .replace('__BASE__', base)
         .replace('__VERSION__', version)
         .replace('__ORT_VERSION__', ortVersion)
         .replace('__PRECACHE__', JSON.stringify(precache, null, 2))
@@ -120,10 +123,21 @@ function pwaAssets(): Plugin {
   }
 }
 
+/**
+ * Where the site will be served from.
+ *
+ * `/` for local development and for a domain root; `/whosyourbirdy/` for a
+ * GitHub Pages project site. Set by the deploy workflow. It has to be a build
+ * input rather than a runtime guess because the service worker's precache list
+ * and the app's asset URLs are both baked at build time.
+ */
+const BASE = process.env.BASE_PATH ?? '/'
+
 // Fully static build: no SSR, no server, no API routes. `onnxruntime-web` and the
 // Web Audio API are browser-only, so there is no server-render pass to opt out of.
 export default defineConfig({
-  plugins: [react(), tailwindcss(), ortRuntime(), pwaAssets()],
+  base: BASE,
+  plugins: [react(), tailwindcss(), ortRuntime(), pwaAssets(BASE)],
   optimizeDeps: {
     // ORT resolves its .wasm/.mjs pairs at runtime from `ort.env.wasm.wasmPaths`.
     // Pre-bundling rewrites those relative URLs and breaks the lookup.

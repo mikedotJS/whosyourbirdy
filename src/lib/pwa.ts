@@ -13,14 +13,21 @@
  *    new version waits, the user is told, and the swap happens when they say so.
  */
 
-const SW_URL = '/sw.js'
+/**
+ * Both the URL and the scope follow the base path: a service worker can only
+ * control pages at or below its own directory, so registering `/sw.js` from a
+ * site served at `/whosyourbirdy/` would register a worker that controls the
+ * whole domain and, on GitHub Pages, is not even there.
+ */
+const SW_URL = `${import.meta.env.BASE_URL}sw.js`
+const SW_SCOPE = import.meta.env.BASE_URL
 
 export function watchForUpdates(onWaiting: (worker: ServiceWorker) => void): void {
   if (!import.meta.env.PROD) return
   if (!('serviceWorker' in navigator)) return
 
   const register = () => {
-    void navigator.serviceWorker.register(SW_URL).then((registration) => {
+    void navigator.serviceWorker.register(SW_URL, { scope: SW_SCOPE }).then((registration) => {
       // A worker already parked from a previous visit.
       if (registration.waiting && navigator.serviceWorker.controller) {
         onWaiting(registration.waiting)

@@ -39,6 +39,13 @@ const SHELL = 'shell-' + VERSION
  */
 const RUNTIME = 'runtime-ort-__ORT_VERSION__'
 const PRECACHE = __PRECACHE__
+/**
+ * Where this deployment lives. `/` on a domain root, `/whosyourbirdy/` on a
+ * GitHub Pages project site. Every path below is built from it: a worker served
+ * from a subpath that reasoned in absolute `/…` terms would miss its own assets
+ * and answer navigations with a document that does not exist.
+ */
+const BASE = '__BASE__'
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(SHELL).then((cache) => cache.addAll(PRECACHE)))
@@ -74,7 +81,8 @@ self.addEventListener('activate', (event) => {
 
 /** Runtime-cached on first use: large, immutable, and not needed to boot. */
 function isRuntimeAsset(url) {
-  return url.pathname.startsWith('/ort/') || /^\/models\/labels_\w+\.txt$/.test(url.pathname)
+  const path = url.pathname.slice(BASE.length)
+  return path.startsWith('ort/') || /^models\/labels_\w+\.txt$/.test(path)
 }
 
 self.addEventListener('fetch', (event) => {
@@ -87,13 +95,15 @@ self.addEventListener('fetch', (event) => {
   // The model is somebody else's business — see the note at the top.
   if (url.pathname.endsWith('.onnx')) return
 
+  // Outside this deployment's own subtree — another project site on the same
+  // github.io domain, for instance — is none of our business.
+  if (!url.pathname.startsWith(BASE)) return
+
   // A navigation always resolves to the shell document. Cache-first, because the
   // update path is explicit: a new worker parks itself and the page offers to
   // reload. Network-first here would trade that for a spinner on every launch.
   if (request.mode === 'navigate') {
-    event.respondWith(
-      caches.match('/index.html').then((hit) => hit ?? fetch(request)),
-    )
+    event.respondWith(caches.match(BASE + 'index.html').then((hit) => hit ?? fetch(request)))
     return
   }
 

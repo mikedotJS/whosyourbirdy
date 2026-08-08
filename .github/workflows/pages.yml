@@ -1,0 +1,101 @@
+name: Deploy to GitHub Pages
+
+# The site is fully static — no backend, no API — so Pages is a natural home for
+# it. The only complication is the 81 MB of model weights, which are not in the
+# repository on purpose: they are rebuilt here from the official BirdNET
+# artifacts and cached, so the repo stays light and nothing under a
+# non-commercial licence is committed to git history.
+
+on:
+  push:
+    branches: [claude/birdnet-v2-web-ui-dpm9hj]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never two deploys at once, and never cancel one halfway: a partial upload
+# would publish a site whose service worker precache list does not match the
+# assets that are actually there.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  # GitHub Pages project sites live at /<repo>/. Everything the app fetches at
+  # runtime — the models, the ORT runtime, the service worker and its scope — is
+  # built from this, so it has to be a build input rather than a runtime guess.
+  BASE_PATH: /whosyourbirdy/
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # The weights are deterministic given these three scripts and the pinned
+      # upstream tag, but the ONNX *export* is not byte-stable across runs — and
+      # the app keys its 52 MB browser cache on the file's SHA-256. Without this
+      # cache every deploy would change the digest and make every visitor
+      # re-download the model. The cache is what keeps that from happening.
+      - name: Cache the built models
+        id: models
+        uses: actions/cache@v4
+        with:
+          path: public/models
+          key: models-${{ hashFiles('scripts/fetch_artifacts.py', 'scripts/convert_to_onnx.py', 'scripts/birdnet_mel.py') }}
+
+      - uses: actions/setup-python@v5
+        if: steps.models.outputs.cache-hit != 'true'
+        with:
+          python-version: '3.11'
+
+      - name: Build the models from the official artifacts
+        if: steps.models.outputs.cache-hit != 'true'
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --quiet --upgrade pip
+          .venv/bin/pip install --quiet \
+            numpy==1.26.4 tensorflow-cpu==2.15.1 tf2onnx==1.16.1 \
+            onnx==1.16.2 onnxruntime==1.19.2
+          # fetch_artifacts.py pins every source by SHA-256, and
+          # convert_to_onnx.py asserts the exported graph against the official
+          # TFLite interpreter. If either check fails this step exits non-zero
+          # and nothing is published — a model that does not behave like BirdNET
+          # must not reach a URL.
+          python3 scripts/fetch_artifacts.py
+          .venv/bin/python scripts/convert_to_onnx.py
+
+      - name: Build the site
+        run: pnpm build
+
+      # `enablement: true` turns Pages on for the repository if it is not already,
+      # so the first run does not fail with "Pages is not enabled" and require a
+      # trip to the settings screen.
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

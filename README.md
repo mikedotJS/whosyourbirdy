@@ -23,6 +23,37 @@ spectrogramme, le filtre géo-temporel de BirdNET et l'écoute au micro en direc
 > Toutes les autres fenêtres restent à ≤ 9,4 × 10⁻⁵. Aucune détection ne change, sur 35 fenêtres
 > paddées testées. Cause identifiée et bornée : voir [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md).
 
+## En ligne
+
+Déployé sur GitHub Pages à chaque push, par [`.github/workflows/pages.yml`](.github/workflows/pages.yml).
+
+Deux points valent d'être connus avant de cliquer :
+
+- **La première analyse télécharge ~52 Mo** (le modèle) et **~24 Mo** de plus (le runtime WASM). Le
+  filtre géographique en ajoute 29 s'il est activé. Tout est ensuite en cache et l'app fonctionne
+  hors ligne. Rien de tout ça n'est pré-téléchargé au chargement de la page : ce sont des décisions
+  qui appartiennent à l'utilisateur, pas au service worker.
+- **Les poids ne sont pas dans le dépôt.** Le workflow les reconstruit depuis les artefacts officiels
+  de BirdNET-Analyzer et les met en cache. Le cache n'est pas une optimisation : l'export ONNX n'est
+  pas déterministe d'un run à l'autre, et l'app indexe son cache navigateur sur le SHA-256 du
+  fichier — sans lui, chaque déploiement forcerait tout le monde à retélécharger 52 Mo.
+
+Le site vit sous `/whosyourbirdy/`, ce que **tout ce qui est chargé à l'exécution** doit respecter :
+les modèles, le runtime ORT, l'URL du service worker et son *scope*, le manifeste. Tout est construit
+à partir de `import.meta.env.BASE_URL`, injecté au build par `BASE_PATH`. Le manifeste, lui, utilise
+des chemins relatifs, qui se résolvent contre sa propre URL et n'ont donc besoin d'aucune
+substitution.
+
+Le harnais de smoke accepte la même variable, ce qui compte : `BASE_PATH=/whosyourbirdy/ pnpm smoke`
+sert le site sous ce préfixe et renvoie 404 pour tout ce qui est en dehors, exactement comme Pages.
+La configuration déployée est donc testée, pas seulement la forme locale — 47 checks verts dans les
+deux formes.
+
+Le site publié pèse ~162 Mo, dont 79 de modèles et ~85 de variantes du runtime ONNX que le navigateur
+ne demande jamais (ORT en publie trois, l'app n'en charge qu'une). C'est du poids d'artefact CI, pas
+de la bande passante utilisateur, et bien en dessous de la limite de 1 Go de Pages ; les élaguer
+supposerait de garantir qu'aucun repli n'existe sur un navigateur que je ne peux pas tester d'ici.
+
 ## Démarrage
 
 ```bash
