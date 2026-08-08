@@ -1,0 +1,9 @@
+# The parity harness, on top of the model build.
+#
+# `librosa` and `resampy` are only ever used by the Python reference scripts —
+# they are what BirdNET-Analyzer itself uses to decode and resample, so the
+# comparison is against upstream's own audio chain rather than a reimplementation
+# of it. The deploy workflow does not need them.
+-r requirements-model.txt
+librosa
+resampy

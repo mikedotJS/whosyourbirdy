@@ -65,9 +65,10 @@ jobs:
         run: |
           python -m venv .venv
           .venv/bin/pip install --quiet --upgrade pip
-          .venv/bin/pip install --quiet \
-            numpy==1.26.4 tensorflow-cpu==2.15.1 tf2onnx==1.16.1 \
-            onnx==1.16.2 onnxruntime==1.19.2
+          # The list lives in the repo, not here. A hand-written copy in this
+          # file is what left `soundfile` out on the first deploy, and the build
+          # only found out after installing TensorFlow.
+          .venv/bin/pip install --quiet -r scripts/requirements-model.txt
           # fetch_artifacts.py pins every source by SHA-256, and
           # convert_to_onnx.py asserts the exported graph against the official
           # TFLite interpreter. If either check fails this step exits non-zero

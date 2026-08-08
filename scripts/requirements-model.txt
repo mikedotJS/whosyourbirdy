@@ -1,0 +1,16 @@
+# Everything `pnpm model:build` needs, and nothing else.
+#
+# This file exists because the deploy workflow used to carry its own hand-written
+# copy of this list, and it drifted: `soundfile` was left out on the assumption
+# that it was only for the parity harness, when `probe_windows()` in
+# convert_to_onnx.py reads the reference fixture with it. The build failed on the
+# first deploy. One list, used by the workflow and by the README, cannot drift.
+#
+# Pinned because the conversion asserts numerical agreement with the official
+# TFLite interpreter, and those tolerances were measured against these versions.
+numpy==1.26.4
+tensorflow-cpu==2.15.1
+tf2onnx==1.16.1
+onnx==1.16.2
+onnxruntime==1.19.2
+soundfile

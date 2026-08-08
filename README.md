@@ -61,8 +61,7 @@ pnpm install
 
 # Environnement Python pour la construction du modèle et le test de parité
 python3 -m venv .venv
-.venv/bin/pip install numpy==1.26.4 tensorflow-cpu==2.15.1 tf2onnx==1.16.1 \
-                      onnx==1.16.2 onnxruntime==1.19.2 soundfile librosa resampy
+.venv/bin/pip install -r scripts/requirements-parity.txt
 
 pnpm model:build   # récupère les artefacts officiels et produit public/models/
 pnpm parity        # prouve que le pipeline reproduit BirdNET
