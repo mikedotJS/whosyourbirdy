@@ -195,6 +195,25 @@ async function main() {
     await page.goto(`${base}/`)
     await page.screenshot({ path: join(shotsDir, '1-idle.png') })
     check('page renders', (await page.locator('h1').textContent()) === 'whosyourbirdy')
+
+    // The splash is a full-viewport overlay. If it ever fails to leave, the app
+    // is completely unusable while looking perfectly fine — and a first version
+    // of its CSS-only fallback did exactly that, finishing at `opacity: 5.6e-16`
+    // with `visibility: visible` because `visibility` only flips at exactly 100%
+    // progress. So this asserts on the two things that matter: it is gone from
+    // the tree, and a click at the centre of the screen reaches the app.
+    await page.waitForFunction(() => document.getElementById('splash') === null, undefined, {
+      timeout: 15_000,
+    })
+    const centreHit = await page.evaluate(() => {
+      const el = document.elementFromPoint(innerWidth / 2, innerHeight / 2)
+      return { id: el?.id ?? '', inSplash: el?.closest('#splash') !== null }
+    })
+    check(
+      'the splash leaves and stops intercepting clicks',
+      !centreHit.inSplash && centreHit.id !== 'splash',
+      `centre of the screen belongs to ${centreHit.id || 'the app'}`,
+    )
     check(
       'attribution visible without interaction',
       (await page.locator('footer').innerText()).includes('Powered by BirdNET'),

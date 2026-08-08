@@ -542,6 +542,40 @@ Résultat : 40 fenêtres, **0 différence d'échantillon**, 24 détections compa
 bit-identique**. La dernière fenêtre zero-paddée du chemin fichier est exclue et comptée, pas
 silencieusement ignorée — un flux en direct n'a pas de fin.
 
+### Le splash
+
+Il vit **en ligne dans `index.html`**, CSS comprise, et c'est toute la décision : il doit se peindre à
+la *première* frame, avant que le bundle de modules soit récupéré et parsé. Un splash monté par React
+n'a plus rien à couvrir — la page blanche qu'il devait cacher a déjà été affichée. Même raison pour le
+`background` sur `html` : sans lui, un appareil en mode sombre voit un flash blanc, le défaut de
+démarrage le plus visible qui soit.
+
+Il **n'ajoute jamais d'attente**. `src/splash.ts` le retire dès que l'app est montée, avec un plancher
+de 620 ms — en cache chaud l'app est prête en ~40 ms, et un splash qui apparaît et disparaît en deux
+frames se lit comme un bug, pas comme une intro. Il est *retiré du DOM*, pas laissé à `opacity: 0`, ce
+qui laisserait un calque plein écran et ses animations en boucle tourner au-dessus de l'app pour le
+reste de la session.
+
+Les barres respirent tant qu'on attend. Ça dit « ça travaille encore » sans prétendre être une barre
+de progression : il n'y a ici aucune longueur qu'on pourrait mesurer honnêtement, donc rien ne le
+prétend.
+
+Deux choses valent d'être racontées parce qu'elles étaient fausses :
+
+- **Le garde-fou CSS.** Si le bundle n'arrive jamais, rien ne retirerait ce calque et l'app serait
+  cachée derrière une jolie animation pour toujours. La première version passait par
+  `visibility: hidden` et échouait de la pire manière possible : `visibility` s'interpole en escalier
+  et ne bascule qu'à **exactement** 100 % de progression, donc l'animation finissait à
+  `opacity: 5,6 × 10⁻¹⁶` avec `visibility: visible` — un calque plein écran invisible qui avalait
+  tous les clics. Il déplace maintenant l'élément hors du viewport, ce qui s'interpole vraiment.
+- **L'anneau était décentré.** `position: absolute` sans offsets dans un conteneur flex prend sa
+  position statique au coin du bloc, pas sur la ligne flex : l'onde partait du coin de l'écran. Et
+  `inset: 0` avec une largeur fixe est sur-contraint — le navigateur laisse tomber `right` et colle
+  à gauche. C'est le conteneur qui porte la taille maintenant.
+
+`prefers-reduced-motion` laisse le symbole au repos et retire les déplacements et les boucles : la
+préférence demande moins de mouvement, pas moins d'information.
+
 ### Clavier
 
 `espace` lecture/pause du segment sous la tête de lecture, `←/→` déplacent de 3 s (une fenêtre

@@ -23,8 +23,234 @@
          does not sit on a colour the app never shows. -->
     <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0a0b14" />
     <meta name="theme-color" media="(prefers-color-scheme: light)" content="#fbfaf6" />
+
+    <!--
+      The splash screen, inline.
+
+      It lives here rather than in a component for one reason: it has to paint on
+      the *first* frame, before the module bundle is fetched and parsed. A splash
+      that only appears once React has mounted has nothing left to cover — the
+      blank page it was meant to hide has already been on screen.
+
+      That constraint is why the CSS is inline and why the animation is pure CSS:
+      neither depends on any JavaScript running.
+
+      It never adds waiting. `src/splash.ts` dismisses it the moment the app is
+      mounted, with a short floor so it reads as intentional rather than as a
+      flicker, and there is a CSS-only escape hatch below in case the bundle never
+      arrives at all.
+    -->
+    <style>
+      :root {
+        --splash-bg: #0a0b14;
+        --splash-ink: #f4f2ec;
+        --splash-muted: #9a98a8;
+        --splash-gold: #efc373;
+        --splash-coral: #e05c42;
+        --splash-focus: #3e8fdb;
+      }
+      @media (prefers-color-scheme: light) {
+        :root {
+          --splash-bg: #fbfaf6;
+          --splash-ink: #14131a;
+          --splash-muted: #6b6878;
+          --splash-gold: #8a5a12;
+          --splash-coral: #c9492f;
+          --splash-focus: #2a6fd6;
+        }
+      }
+
+      /* Paints the correct surface before any stylesheet loads, so there is no
+         white flash on a dark-mode device — the single most visible boot defect
+         and the reason this block is not in index.css. */
+      html {
+        background: var(--splash-bg);
+      }
+
+      #splash {
+        position: fixed;
+        inset: 0;
+        z-index: 100;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 22px;
+        background: var(--splash-bg);
+        /* The same dawn wash the app uses, so the splash is the app's first frame
+           rather than a different picture that then swaps. */
+        background-image:
+          radial-gradient(34% 40% at 18% 12%, color-mix(in oklab, var(--splash-gold) 38%, transparent), transparent 68%),
+          radial-gradient(38% 34% at 86% 22%, color-mix(in oklab, var(--splash-coral) 30%, transparent), transparent 70%),
+          radial-gradient(42% 42% at 68% 92%, color-mix(in oklab, var(--splash-focus) 28%, transparent), transparent 72%);
+        font-family: ui-sans-serif, system-ui, sans-serif;
+        will-change: opacity, transform;
+      }
+
+      /* The mark: three rising bars, the same spectrogram column as the favicon. */
+      #splash .bars {
+        display: flex;
+        align-items: flex-end;
+        gap: 9px;
+        height: 76px;
+      }
+      #splash .bars i {
+        display: block;
+        width: 13px;
+        border-radius: 7px;
+        background: linear-gradient(180deg, var(--splash-gold), color-mix(in oklab, var(--splash-coral) 70%, var(--splash-gold)));
+        transform-origin: bottom center;
+        /* Scale, not height: it stays on the compositor, so the entrance is smooth
+           even while the main thread is busy parsing the bundle — which is exactly
+           when this animation is playing. */
+        transform: scaleY(0.06);
+        animation:
+          splash-rise 620ms cubic-bezier(0.34, 1.4, 0.64, 1) forwards,
+          splash-breathe 1900ms ease-in-out 700ms infinite;
+      }
+      #splash .bars i:nth-child(1) { height: 40px; animation-delay: 60ms, 760ms; }
+      #splash .bars i:nth-child(2) { height: 76px; animation-delay: 140ms, 840ms; }
+      #splash .bars i:nth-child(3) { height: 56px; animation-delay: 220ms, 920ms; }
+
+      /*
+       * A single ring leaving the mark, echoing the listening view's ripples.
+       *
+       * It needs its own positioned wrapper. An absolutely positioned child of a
+       * flex container with no offsets takes its static position from the
+       * container's content-box corner, not from the flex line — so without
+       * `.mark` this rippled outward from the top-left corner of the screen
+       * instead of from the bars.
+       */
+      #splash .mark {
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        /* The size lives here, not on the ring. A ring with `inset: 0` *and* a
+           fixed width is over-constrained: the browser drops `right` and pins it
+           left, which put the ripple off-centre from the bars it is supposed to
+           be leaving. Sizing the wrapper lets the ring simply fill it, so its
+           centre and the bars' centre are the same point by construction. */
+        width: 132px;
+        height: 132px;
+      }
+      #splash .ring {
+        position: absolute;
+        inset: 0;
+        border-radius: 999px;
+        border: 2px solid var(--splash-gold);
+        opacity: 0;
+        animation: splash-ring 1500ms cubic-bezier(0.16, 1, 0.3, 1) 300ms infinite;
+      }
+
+      #splash .word {
+        font-size: 15px;
+        font-weight: 500;
+        letter-spacing: 0.14em;
+        text-transform: lowercase;
+        color: var(--splash-ink);
+        opacity: 0;
+        animation: splash-word 520ms cubic-bezier(0.16, 1, 0.3, 1) 380ms forwards;
+      }
+      #splash .sub {
+        margin-top: -14px;
+        font-size: 12px;
+        color: var(--splash-muted);
+        opacity: 0;
+        animation: splash-word 520ms cubic-bezier(0.16, 1, 0.3, 1) 500ms forwards;
+      }
+
+      @keyframes splash-rise {
+        to { transform: scaleY(1); }
+      }
+      /* Only while waiting. It says "still working" without pretending to be a
+         progress bar — there is nothing here whose length we could honestly
+         measure, so nothing here claims to. */
+      @keyframes splash-breathe {
+        0%, 100% { transform: scaleY(1); }
+        50% { transform: scaleY(0.72); }
+      }
+      @keyframes splash-ring {
+        0% { transform: scale(0.55); opacity: 0; }
+        25% { opacity: 0.55; }
+        100% { transform: scale(1.42); opacity: 0; }
+      }
+      @keyframes splash-word {
+        from { opacity: 0; transform: translateY(6px); }
+        to { opacity: 1; transform: none; }
+      }
+
+      /* Dismissal, driven from src/splash.ts once the app is mounted. */
+      #splash.out {
+        pointer-events: none;
+        opacity: 0;
+        transform: scale(1.04);
+        transition:
+          opacity 420ms cubic-bezier(0.16, 1, 0.3, 1),
+          transform 520ms cubic-bezier(0.16, 1, 0.3, 1);
+      }
+
+      /*
+       * The escape hatch.
+       *
+       * If the bundle never arrives — a bad deploy, a dead network, a browser that
+       * refuses the module — nothing would remove this overlay and the app would
+       * be permanently hidden behind a pretty animation. CSS alone takes it away,
+       * so the worst case is a visibly broken app rather than an invisible one.
+       *
+       * It moves the element out of the viewport rather than setting
+       * `visibility: hidden`. That was the first attempt and it fails in the worst
+       * possible way: `visibility` interpolates as a step and only flips at
+       * *exactly* 100% progress, so the animation finished with
+       * `opacity: 5.6e-16` and `visibility: visible` — an invisible full-screen
+       * layer still swallowing every click. `transform` interpolates for real, and
+       * an element translated off-screen cannot intercept anything.
+       *
+       * 15 s rather than 10: long enough not to fire during a legitimately slow
+       * load on a bad connection, where pulling the splash early would just show a
+       * blank page.
+       */
+      #splash {
+        animation: splash-giveup 700ms ease-in 15s forwards;
+      }
+      @keyframes splash-giveup {
+        to { opacity: 0; transform: translateY(-110%); }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        /* The mark still appears, at rest. Travel and looping are removed; the
+           preference asks for less motion, not for less information. */
+        #splash .bars i {
+          transform: scaleY(1);
+          animation: none;
+        }
+        #splash .ring {
+          animation: none;
+        }
+        #splash .word,
+        #splash .sub {
+          opacity: 1;
+          animation: none;
+        }
+        #splash.out {
+          transition: opacity 160ms linear;
+          transform: none;
+        }
+      }
+    </style>
   </head>
   <body>
+    <!-- `aria-hidden` and no focusable content: to a screen reader the app starts
+         at #root, and this is scenery. -->
+    <div id="splash" aria-hidden="true">
+      <span class="mark">
+        <span class="ring"></span>
+        <span class="bars"><i></i><i></i><i></i></span>
+      </span>
+      <span class="word">whosyourbirdy</span>
+      <span class="sub">identification d'oiseaux au chant</span>
+    </div>
+
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
