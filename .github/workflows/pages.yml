@@ -80,12 +80,15 @@ jobs:
       - name: Build the site
         run: pnpm build
 
-      # `enablement: true` turns Pages on for the repository if it is not already,
-      # so the first run does not fail with "Pages is not enabled" and require a
-      # trip to the settings screen.
+      # No `enablement: true` here. It is meant to switch Pages on automatically,
+      # but creating a Pages site needs administration rights that the workflow's
+      # GITHUB_TOKEN does not have, so it fails with "Resource not accessible by
+      # integration" — a permission error standing in for a much simpler fact.
+      #
+      # Pages has to be turned on once, by hand:
+      #   Settings → Pages → Build and deployment → Source: GitHub Actions
+      # After that this step finds the site and every later deploy is automatic.
       - uses: actions/configure-pages@v5
-        with:
-          enablement: true
 
       - uses: actions/upload-pages-artifact@v3
         with:

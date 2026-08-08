@@ -27,6 +27,12 @@ spectrogramme, le filtre géo-temporel de BirdNET et l'écoute au micro en direc
 
 Déployé sur GitHub Pages à chaque push, par [`.github/workflows/pages.yml`](.github/workflows/pages.yml).
 
+> **Une action manuelle, une seule fois** : *Settings → Pages → Build and deployment → Source :
+> **GitHub Actions***. Créer un site Pages demande des droits d'administration que le `GITHUB_TOKEN`
+> du workflow n'a pas — `enablement: true` échoue donc sur « Resource not accessible by
+> integration », une erreur de permission qui cache un fait bien plus simple. Une fois le réglage
+> fait, tous les déploiements suivants sont automatiques.
+
 Deux points valent d'être connus avant de cliquer :
 
 - **La première analyse télécharge ~52 Mo** (le modèle) et **~24 Mo** de plus (le runtime WASM). Le
